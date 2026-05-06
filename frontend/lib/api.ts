@@ -33,105 +33,120 @@ async function fetchWithAuth(url: string, options: RequestInit = {}) {
   return res.json()
 }
 
-export const api = {
-  login: (email: string, password: string) =>
-    fetchWithAuth('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    }),
+export const login = (email: string, password: string) =>
+  fetchWithAuth('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  })
 
-  register: (email: string, password: string) =>
-    fetchWithAuth('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    }),
+export const register = (email: string, password: string) =>
+  fetchWithAuth('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  })
 
-  uploadImage: async (file: File) => {
+export const uploadImage = async (file: File) => {
+  const formData = new FormData()
+  formData.append('image', file)
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
+  const res = await fetch(`${API_BASE}/api/upload`, {
+    method: 'POST',
+    body: formData,
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  if (!res.ok) throw new Error('Upload failed')
+  return res.json()
+}
+
+export const detectFood = async (input: string | File) => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
+  const headers: Record<string, string> = {
+    ...(token && { Authorization: `Bearer ${token}` }),
+  }
+
+  let body: BodyInit
+  if (typeof input === 'string') {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify({ imageUrl: input })
+  } else {
     const formData = new FormData()
-    formData.append('image', file)
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
-    const res = await fetch(`${API_BASE}/api/upload`, {
-      method: 'POST',
-      body: formData,
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    })
-    if (!res.ok) throw new Error('Upload failed')
-    return res.json()
-  },
+    formData.append('image', input)
+    body = formData
+  }
 
-  detectFood: async (input: string | File) => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
-    const headers: Record<string, string> = {
-      ...(token && { Authorization: `Bearer ${token}` }),
-    }
+  const res = await fetch(`${API_BASE}/api/detect`, {
+    method: 'POST',
+    headers,
+    body,
+  })
 
-    let body: BodyInit
-    if (typeof input === 'string') {
-      headers['Content-Type'] = 'application/json'
-      body = JSON.stringify({ imageUrl: input })
-    } else {
-      const formData = new FormData()
-      formData.append('image', input)
-      body = formData
-      // Note: Don't set Content-Type header for FormData, browser does it with boundary
-    }
+  if (!res.ok) throw new Error('Detection failed')
+  return res.json()
+}
 
-    const res = await fetch(`${API_BASE}/api/detect`, {
-      method: 'POST',
-      headers,
-      body,
-    })
+export const getNutrition = (foodName: string) =>
+  fetchWithAuth('/api/nutrition', {
+    method: 'POST',
+    body: JSON.stringify({ foodName }),
+  })
 
-    if (!res.ok) throw new Error('Detection failed')
-    return res.json()
-  },
+export const logMeal = (meal: {
+  food_name: string
+  calories: number
+  protein: number
+  carbs: number
+  fat: number
+  meal_type: string
+  image_url?: string
+}) =>
+  fetchWithAuth('/api/log', {
+    method: 'POST',
+    body: JSON.stringify(meal),
+  })
 
-  getNutrition: (foodName: string) =>
-    fetchWithAuth('/api/nutrition', {
-      method: 'POST',
-      body: JSON.stringify({ foodName }),
-    }),
+export const getDashboard = () => fetchWithAuth('/api/dashboard')
 
-  logMeal: (meal: {
-    food_name: string
-    calories: number
-    protein: number
-    carbs: number
-    fat: number
-    meal_type: string
-    image_url?: string
-  }) =>
-    fetchWithAuth('/api/log', {
-      method: 'POST',
-      body: JSON.stringify(meal),
-    }),
+export const getHistory = (date?: string) =>
+  fetchWithAuth(`/api/history${date ? `?date=${date}` : ''}`)
 
-  getDashboard: () => fetchWithAuth('/api/dashboard'),
+export const logWeight = (weight: number) =>
+  fetchWithAuth('/api/weight', {
+    method: 'POST',
+    body: JSON.stringify({ weight }),
+  })
 
-  getHistory: (date?: string) =>
-    fetchWithAuth(`/api/history${date ? `?date=${date}` : ''}`),
+export const getWeightHistory = () => fetchWithAuth('/api/weight')
 
-  logWeight: (weight: number) =>
-    fetchWithAuth('/api/weight', {
-      method: 'POST',
-      body: JSON.stringify({ weight }),
-    }),
+export const logWater = (amount: number) =>
+  fetchWithAuth('/api/water', {
+    method: 'POST',
+    body: JSON.stringify({ amount }),
+  })
 
-  getWeightHistory: () => fetchWithAuth('/api/weight'),
+export const getWater = () => fetchWithAuth('/api/water')
 
-  logWater: (amount: number) =>
-    fetchWithAuth('/api/water', {
-      method: 'POST',
-      body: JSON.stringify({ amount }),
-    }),
+export const getProfile = () => fetchWithAuth('/api/profile')
 
-  getWater: () => fetchWithAuth('/api/water'),
+export const updateProfile = (data: Record<string, number>) =>
+  fetchWithAuth('/api/profile', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
 
-  getProfile: () => fetchWithAuth('/api/profile'),
-
-  updateProfile: (data: Record<string, number>) =>
-    fetchWithAuth('/api/profile', {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
+// Also export the api object for backward compatibility if needed
+export const api = {
+  login,
+  register,
+  uploadImage,
+  detectFood,
+  getNutrition,
+  logMeal,
+  getDashboard,
+  getHistory,
+  logWeight,
+  getWeightHistory,
+  logWater,
+  getWater,
+  getProfile,
+  updateProfile,
 }
