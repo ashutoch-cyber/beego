@@ -87,7 +87,6 @@ export default function ScanPage() {
         meal_type: mealType,
         image_url: image || undefined,
         date: new Date().toISOString().split('T')[0],
-        timestamp: Date.now(),
       });
       setStep('done');
     } finally {
