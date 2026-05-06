@@ -77,13 +77,13 @@ export async function getPendingMeals(): Promise<PendingMeal[]> {
   })
 }
 
-export async function cacheWeight(weight: number) {
+export async function cacheWeight(data: { weight: number; date?: string }) {
   const db = await openDB()
   const tx = db.transaction('pendingWeights', 'readwrite')
   const store = tx.objectStore('pendingWeights')
   await store.put({
     id: `pending-weight-${Date.now()}`,
-    weight,
+    ...data,
     timestamp: Date.now(),
   })
   db.close()

@@ -28,7 +28,7 @@ export default function ProfilePage() {
       await logWeight(w);
     } catch {
       const today = new Date().toISOString().split('T')[0];
-      await cacheWeight(today, w);
+      await cacheWeight({ date: today, weight: w });
     }
     setWeight('');
     setShowWeightInput(false);
