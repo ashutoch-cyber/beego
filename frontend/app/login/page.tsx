@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { LogIn, UserPlus, Loader2 } from 'lucide-react';
-import { login, register } from '@/lib/api';
+import { api } from '@/lib/api';
 
 export default function LoginPage() {
   const [isLogin, setIsLogin] = useState(true);
@@ -17,9 +17,9 @@ export default function LoginPage() {
     setError('');
     try {
       if (isLogin) {
-        await login(email, password);
+        await api.login(email, password);
       } else {
-        await register(email, password);
+        await api.register(email, password);
       }
       window.location.href = '/';
     } catch (err: any) {
@@ -36,7 +36,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 bg-primary-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <span className="text-2xl">🥗</span>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">NutriScan AI</h1>
+          <h1 className="text-2xl font-bold text-gray-900">NutriSnap AI</h1>
           <p className="text-gray-500 text-sm mt-1">Smart calorie tracking powered by AI</p>
         </div>
 
@@ -100,7 +100,10 @@ export default function LoginPage() {
 
           <div className="mt-6 text-center">
             <button
-              onClick={() => setIsLogin(!isLogin)}
+              onClick={() => {
+                setIsLogin(!isLogin);
+                setError('');
+              }}
               className="text-sm text-primary-600 font-medium hover:underline"
             >
               {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
@@ -116,32 +119,11 @@ export default function LoginPage() {
             </button>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-orm>
-
-          <div className="mt-6 text-center">
-            <p className="text-sm text-gray-500">
-              {isLogin ? "Don't have an account?" : 'Already have an account?'}{' '}
-              <button
-                onClick={() => {
-                  setIsLogin(!isLogin)
-                  setError('')
-                }}
-                className="text-primary-500 font-semibold hover:underline"
-              >
-                {isLogin ? 'Sign Up' : 'Sign In'}
-              </button>
-            </p>
-          </div>
-        </div>
-
+        
         <p className="text-center text-xs text-gray-400 mt-6">
           Built with Cloudflare · Free Forever
         </p>
       </div>
     </div>
-  )
+  );
 }
