@@ -72,6 +72,7 @@ export default function ScanPage() {
         fat: nutrition.fat,
         meal_type: mealType,
         image_url: image || undefined,
+        date: new Date().toISOString().split('T')[0],
       };
       await logMeal(meal);
       await cacheMeal(meal);
@@ -85,7 +86,8 @@ export default function ScanPage() {
         fat: nutrition.fat,
         meal_type: mealType,
         image_url: image || undefined,
-        date: new Date().toISOString(),
+        date: new Date().toISOString().split('T')[0],
+        timestamp: Date.now(),
       });
       setStep('done');
     } finally {
