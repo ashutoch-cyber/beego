@@ -1,0 +1,21 @@
+name = "nutriscan-worker"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+
+[vars]
+# Set in Cloudflare dashboard or via wrangler secret
+# HUGGINGFACE_API_TOKEN = ""
+# USDA_API_KEY = ""
+# JWT_SECRET = ""
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nutriscan-db"
+database_id = "YOUR_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "nutriscan-images"
+
+[env.production]
+name = "nutriscan-worker"
