@@ -26,11 +26,8 @@ export default function ScanPage() {
       reader.onload = (e) => setImage(e.target?.result as string);
       reader.readAsDataURL(file);
 
-      const uploadRes = await uploadImage(file);
-      setImageKey(uploadRes.key);
       setStep('detect');
-
-      const detectRes = await detectFood(uploadRes.url);
+      const detectRes = await detectFood(file);
       setDetected(detectRes);
       setStep('confirm');
     } catch (err: any) {

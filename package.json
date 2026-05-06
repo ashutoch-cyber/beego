@@ -1,0 +1,7 @@
+{
+  "scripts": {
+    "deploy:worker": "cd worker && npm install && npx wrangler deploy",
+    "deploy:frontend": "cd frontend && npm install && npm run pages:deploy",
+    "deploy": "npm run deploy:worker && npm run deploy:frontend"
+  }
+}

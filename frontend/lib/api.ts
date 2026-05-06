@@ -59,11 +59,32 @@ export const api = {
     return res.json()
   },
 
-  detectFood: (imageUrl: string) =>
-    fetchWithAuth('/api/detect', {
+  detectFood: async (input: string | File) => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
+    const headers: Record<string, string> = {
+      ...(token && { Authorization: `Bearer ${token}` }),
+    }
+
+    let body: BodyInit
+    if (typeof input === 'string') {
+      headers['Content-Type'] = 'application/json'
+      body = JSON.stringify({ imageUrl: input })
+    } else {
+      const formData = new FormData()
+      formData.append('image', input)
+      body = formData
+      // Note: Don't set Content-Type header for FormData, browser does it with boundary
+    }
+
+    const res = await fetch(`${API_BASE}/api/detect`, {
       method: 'POST',
-      body: JSON.stringify({ imageUrl }),
-    }),
+      headers,
+      body,
+    })
+
+    if (!res.ok) throw new Error('Detection failed')
+    return res.json()
+  },
 
   getNutrition: (foodName: string) =>
     fetchWithAuth('/api/nutrition', {
