@@ -101,10 +101,11 @@ export async function getCachedWeights(): Promise<PendingWeight[]> {
   })
 }
 
-export async function cacheWater(amount: number) {
+export async function cacheWater(data: number | { amount: number; date?: string }) {
   const db = await openDB()
   const tx = db.transaction('pendingWater', 'readwrite')
   const store = tx.objectStore('pendingWater')
+  const amount = typeof data === 'number' ? data : data.amount
   await store.put({
     id: `pending-water-${Date.now()}`,
     amount,
@@ -113,13 +114,20 @@ export async function cacheWater(amount: number) {
   db.close()
 }
 
-export async function getCachedWater(): Promise<PendingWater[]> {
+export async function getCachedWater(date?: string): Promise<PendingWater[]> {
   const db = await openDB()
   const tx = db.transaction('pendingWater', 'readonly')
   const store = tx.objectStore('pendingWater')
   const request = store.getAll()
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      let results = request.result as PendingWater[]
+      if (date) {
+        // Filter by date if provided (assuming the timestamp matches the date)
+        results = results.filter(w => new Date(w.timestamp).toISOString().split('T')[0] === date)
+      }
+      resolve(results)
+    }
     request.onerror = () => reject(request.error)
     db.close()
   })

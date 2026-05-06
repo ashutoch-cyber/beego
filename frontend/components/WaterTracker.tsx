@@ -23,7 +23,8 @@ export default function WaterTracker() {
     } catch {
       const today = new Date().toISOString().split('T')[0];
       const cached = await getCachedWater(today);
-      setWater(cached);
+      const total = cached.reduce((sum, item) => sum + item.amount, 0);
+      setWater(total);
     }
   }
 
