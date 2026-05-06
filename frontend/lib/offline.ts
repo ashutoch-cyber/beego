@@ -107,3 +107,4 @@ export function registerServiceWorker() {
 }
 
 export const cacheMeal = savePendingMeal;
+export const getCachedMeals = getPendingMeals;
