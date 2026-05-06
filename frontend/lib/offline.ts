@@ -12,6 +12,7 @@ interface PendingMeal {
   fat: number
   meal_type: string
   image_url?: string
+  date: string
   timestamp: number
 }
 
