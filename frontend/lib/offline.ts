@@ -104,3 +104,5 @@ export function registerServiceWorker() {
       })
   }
 }
+
+export const cacheMeal = savePendingMeal;
