@@ -35,7 +35,7 @@ export default function WaterTracker() {
       setWater((prev) => prev + amount);
     } catch {
       const today = new Date().toISOString().split('T')[0];
-      await cacheWater(today, amount);
+      await cacheWater({ amount, date: today });
       setWater((prev) => prev + amount);
     } finally {
       setLoading(false);
