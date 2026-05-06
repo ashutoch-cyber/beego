@@ -125,6 +125,8 @@ export const logWater = (amount: number) =>
 
 export const getWater = () => fetchWithAuth('/api/water')
 
+export const getWaterToday = getWater;
+
 export const getProfile = () => fetchWithAuth('/api/profile')
 
 export const updateProfile = (data: Record<string, number>) =>

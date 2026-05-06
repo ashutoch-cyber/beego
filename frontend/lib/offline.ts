@@ -154,3 +154,4 @@ export function isOnline(): boolean {
 
 export const cacheMeal = savePendingMeal;
 export const getCachedMeals = getPendingMeals;
+export const getCachedWeightHistory = getCachedWeights;
