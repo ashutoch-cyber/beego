@@ -16,6 +16,18 @@ interface PendingMeal {
   timestamp: number
 }
 
+interface PendingWeight {
+  id: string
+  weight: number
+  timestamp: number
+}
+
+interface PendingWater {
+  id: string
+  amount: number
+  timestamp: number
+}
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
@@ -25,6 +37,12 @@ function openDB(): Promise<IDBDatabase> {
       const db = (event.target as IDBOpenDBRequest).result
       if (!db.objectStoreNames.contains('pendingMeals')) {
         db.createObjectStore('pendingMeals', { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains('pendingWeights')) {
+        db.createObjectStore('pendingWeights', { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains('pendingWater')) {
+        db.createObjectStore('pendingWater', { keyPath: 'id' })
       }
       if (!db.objectStoreNames.contains('cachedDashboard')) {
         db.createObjectStore('cachedDashboard', { keyPath: 'key' })
@@ -39,7 +57,7 @@ export async function savePendingMeal(meal: Omit<PendingMeal, 'id' | 'timestamp'
   const store = tx.objectStore('pendingMeals')
   const pendingMeal: PendingMeal = {
     ...meal,
-    id: `pending-${Date.now()}`,
+    id: `pending-meal-${Date.now()}`,
     timestamp: Date.now(),
   }
   await store.put(pendingMeal)
@@ -59,12 +77,52 @@ export async function getPendingMeals(): Promise<PendingMeal[]> {
   })
 }
 
-export async function removePendingMeal(id: string) {
+export async function cacheWeight(weight: number) {
   const db = await openDB()
-  const tx = db.transaction('pendingMeals', 'readwrite')
-  const store = tx.objectStore('pendingMeals')
-  await store.delete(id)
+  const tx = db.transaction('pendingWeights', 'readwrite')
+  const store = tx.objectStore('pendingWeights')
+  await store.put({
+    id: `pending-weight-${Date.now()}`,
+    weight,
+    timestamp: Date.now(),
+  })
   db.close()
+}
+
+export async function getCachedWeights(): Promise<PendingWeight[]> {
+  const db = await openDB()
+  const tx = db.transaction('pendingWeights', 'readonly')
+  const store = tx.objectStore('pendingWeights')
+  const request = store.getAll()
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+    db.close()
+  })
+}
+
+export async function cacheWater(amount: number) {
+  const db = await openDB()
+  const tx = db.transaction('pendingWater', 'readwrite')
+  const store = tx.objectStore('pendingWater')
+  await store.put({
+    id: `pending-water-${Date.now()}`,
+    amount,
+    timestamp: Date.now(),
+  })
+  db.close()
+}
+
+export async function getCachedWater(): Promise<PendingWater[]> {
+  const db = await openDB()
+  const tx = db.transaction('pendingWater', 'readonly')
+  const store = tx.objectStore('pendingWater')
+  const request = store.getAll()
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+    db.close()
+  })
 }
 
 export async function cacheDashboard(data: any) {
@@ -92,18 +150,6 @@ export async function getCachedDashboard(): Promise<any | null> {
 
 export function isOnline(): boolean {
   return typeof navigator !== 'undefined' && navigator.onLine
-}
-
-export function registerServiceWorker() {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js')
-      .then((registration) => {
-        console.log('SW registered:', registration.scope)
-      })
-      .catch((error) => {
-        console.log('SW registration failed:', error)
-      })
-  }
 }
 
 export const cacheMeal = savePendingMeal;
