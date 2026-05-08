@@ -4,7 +4,8 @@ compatibility_date = "2026-05-01"
 
 [vars]
 # Set in Cloudflare dashboard or via wrangler secret
-# HUGGINGFACE_API_TOKEN = ""
+# HUGGINGFACE_API_KEY = ""
+# HUGGINGFACE_API_TOKEN = "" # also supported
 # USDA_API_KEY = ""
 # JWT_SECRET = ""
 

@@ -1,22 +1,35 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { Camera, Upload, X, Check, AlertTriangle, Sparkles, Loader2 } from 'lucide-react';
+import { Camera, Upload, X, Check, AlertTriangle, Sparkles, Loader2, Package, FileText } from 'lucide-react';
 import BottomNav from '@/components/BottomNav';
-import { uploadImage, detectFood, getNutrition, logMeal } from '@/lib/api';
+import { analyzeNutritionLabel, detectFood, getNutrition, logMeal } from '@/lib/api';
 import { cacheMeal } from '@/lib/offline';
+
+type Detection = {
+  label: string;
+  score: number;
+  kind?: 'food' | 'packaged_food' | 'not_food' | 'manual';
+  needsReview?: boolean;
+  needsLabel?: boolean;
+  message?: string;
+  objectLabel?: string;
+};
 
 export default function ScanPage() {
   const [image, setImage] = useState<string | null>(null);
   const [imageKey, setImageKey] = useState<string>('');
-  const [detected, setDetected] = useState<{ label: string; score: number } | null>(null);
+  const [labelImage, setLabelImage] = useState<string | null>(null);
+  const [detected, setDetected] = useState<Detection | null>(null);
   const [nutrition, setNutrition] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState<'upload' | 'detect' | 'confirm' | 'nutrition' | 'done'>('upload');
+  const [step, setStep] = useState<'upload' | 'detect' | 'confirm' | 'label' | 'nutrition' | 'done'>('upload');
   const [customFood, setCustomFood] = useState('');
+  const [manualNutrition, setManualNutrition] = useState({ calories: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', sodium: '' });
   const [mealType, setMealType] = useState('breakfast');
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const labelInputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback(async (file: File) => {
     setError('');
@@ -31,8 +44,15 @@ export default function ScanPage() {
       setDetected(detectRes);
       setStep('confirm');
     } catch (err: any) {
-      setError(err.message || 'Failed to process image');
-      setStep('upload');
+      setDetected({
+        label: '',
+        score: 0,
+        kind: 'manual',
+        needsReview: true,
+        message: 'AI detection is unavailable. Enter the food name manually.',
+      });
+      setError(err.message || 'AI detection is unavailable. Enter the food name manually.');
+      setStep('confirm');
     } finally {
       setLoading(false);
     }
@@ -60,10 +80,68 @@ export default function ScanPage() {
     }
   }
 
+  const handleLabelFile = useCallback(async (file: File) => {
+    setError('');
+    setLoading(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = (e) => setLabelImage(e.target?.result as string);
+      reader.readAsDataURL(file);
+
+      const productName = customFood.trim() || detected?.label || 'Packaged food';
+      const nutri = await analyzeNutritionLabel(file, productName);
+      setNutrition(nutri);
+      if (nutri?.needsReview) {
+        setError('Some values could not be read clearly. Review the nutrition facts before logging.');
+      }
+      setStep('nutrition');
+    } catch (err: any) {
+      setError(err.message || 'Could not read the package label. Enter the nutrition values manually.');
+    } finally {
+      setLoading(false);
+    }
+  }, [customFood, detected?.label]);
+
+  function handleManualLabelNutrition() {
+    const calories = Number(manualNutrition.calories);
+    if (!calories || calories < 0) {
+      setError('Enter calories from the package label to continue.');
+      return;
+    }
+
+    setNutrition({
+      food_name: customFood.trim() || detected?.label || 'Packaged food',
+      calories,
+      protein: Number(manualNutrition.protein) || 0,
+      carbs: Number(manualNutrition.carbs) || 0,
+      fat: Number(manualNutrition.fat) || 0,
+      sugar: Number(manualNutrition.sugar) || undefined,
+      fiber: Number(manualNutrition.fiber) || undefined,
+      sodium: Number(manualNutrition.sodium) || undefined,
+      serving: 'from package label',
+      source: 'manual',
+    });
+    setError('');
+    setStep('nutrition');
+  }
+
+  function startPackagedFlow() {
+    setDetected((current) => ({
+      label: current?.label || customFood.trim() || 'packaged food',
+      score: current?.score || 0,
+      kind: 'packaged_food',
+      needsLabel: true,
+      needsReview: true,
+      message: 'Packaged food needs the back label for accurate calories and macros.',
+    }));
+    setError('');
+    setStep('label');
+  }
+
   async function handleLogMeal() {
     setLoading(true);
     try {
-      const foodName = detected?.label || customFood;
+      const foodName = customFood.trim() || detected?.label || nutrition?.food_name || 'Food';
       const meal = {
         food_name: foodName,
         calories: nutrition.calories,
@@ -79,7 +157,7 @@ export default function ScanPage() {
       setStep('done');
     } catch (err: any) {
       await cacheMeal({
-        food_name: detected?.label || customFood,
+        food_name: customFood.trim() || detected?.label || nutrition?.food_name || 'Food',
         calories: nutrition.calories,
         protein: nutrition.protein,
         carbs: nutrition.carbs,
@@ -97,12 +175,23 @@ export default function ScanPage() {
   function reset() {
     setImage(null);
     setImageKey('');
+    setLabelImage(null);
     setDetected(null);
     setNutrition(null);
     setStep('upload');
     setCustomFood('');
+    setManualNutrition({ calories: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', sodium: '' });
     setError('');
   }
+
+  const detectedLabel = detected?.label?.trim() || '';
+  const confirmedFood = customFood.trim() || detectedLabel;
+  const needsManualReview = Boolean(detected?.needsReview || !detectedLabel);
+  const isPackagedFood = detected?.kind === 'packaged_food' || detected?.needsLabel;
+  const isNotFood = detected?.kind === 'not_food';
+  const doneFoodName = confirmedFood || nutrition?.food_name || 'Meal';
+  const progressSteps = ['upload', 'detect', 'confirm', ...(isPackagedFood || step === 'label' ? ['label'] : []), 'nutrition', 'done'];
+  const currentStepIndex = progressSteps.indexOf(step);
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
@@ -114,18 +203,18 @@ export default function ScanPage() {
       <div className="max-w-lg mx-auto px-4 -mt-4">
         {/* Progress Steps */}
         <div className="flex items-center justify-center gap-2 mb-6">
-          {['upload', 'detect', 'confirm', 'nutrition', 'done'].map((s, i) => (
+          {progressSteps.map((s, i) => (
             <div key={s} className="flex items-center gap-2">
               <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
                 step === s ? 'bg-primary-600 text-white scale-110' :
-                ['upload', 'detect', 'confirm', 'nutrition', 'done'].indexOf(step) > i ? 'bg-primary-200 text-primary-700' :
+                currentStepIndex > i ? 'bg-primary-200 text-primary-700' :
                 'bg-gray-200 text-gray-400'
               }`}>
-                {['upload', 'detect', 'confirm', 'nutrition', 'done'].indexOf(step) > i ? <Check size={14} /> : i + 1}
+                {currentStepIndex > i ? <Check size={14} /> : i + 1}
               </div>
-              {i < 4 && (
+              {i < progressSteps.length - 1 && (
                 <div className={`w-6 h-0.5 rounded-full ${
-                  ['upload', 'detect', 'confirm', 'nutrition', 'done'].indexOf(step) > i ? 'bg-primary-400' : 'bg-gray-200'
+                  currentStepIndex > i ? 'bg-primary-400' : 'bg-gray-200'
                 }`} />
               )}
             </div>
@@ -194,53 +283,216 @@ export default function ScanPage() {
 
             {step === 'confirm' && detected && (
               <div className="card mt-4 animate-slide-up">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center">
-                    <Sparkles className="text-green-600" size={20} />
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium">AI Detected</p>
-                    <h3 className="font-bold text-gray-900 text-lg capitalize">{detected.label}</h3>
-                  </div>
-                  <div className="ml-auto">
-                    <span className="bg-primary-100 text-primary-700 px-3 py-1 rounded-full text-sm font-bold">
-                      {Math.round(detected.score * 100)}%
-                    </span>
-                  </div>
-                </div>
+                {isNotFood ? (
+                  <>
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 bg-red-50 rounded-xl flex items-center justify-center">
+                        <AlertTriangle className="text-red-600" size={20} />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 font-medium">Scan Warning</p>
+                        <h3 className="font-bold text-gray-900 text-lg capitalize">{detected.label}</h3>
+                      </div>
+                    </div>
+                    <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl p-3 mb-4">
+                      {detected.message || 'This does not look like food. Please upload a meal or packaged food.'}
+                    </p>
+                    <button onClick={reset} className="btn-primary w-full">
+                      Scan Food Instead
+                    </button>
+                  </>
+                ) : isPackagedFood ? (
+                  <>
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center">
+                        <Package className="text-amber-600" size={20} />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 font-medium">Packaged Food</p>
+                        <h3 className="font-bold text-gray-900 text-lg capitalize">{confirmedFood || 'Packaged food'}</h3>
+                      </div>
+                    </div>
+                    <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3 mb-4">
+                      {detected.message || 'Upload the back side of the package with the ingredients or nutrition label.'}
+                    </p>
+                    <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                      <p className="text-xs text-gray-500 font-medium mb-2">Product name</p>
+                      <input
+                        type="text"
+                        value={customFood}
+                        onChange={(e) => setCustomFood(e.target.value)}
+                        placeholder={detected.label || 'Packaged food name'}
+                        className="input-field text-sm"
+                      />
+                    </div>
+                    <button onClick={startPackagedFlow} className="btn-primary w-full">
+                      <FileText size={16} className="inline mr-2" />
+                      Upload Back Label
+                    </button>
+                    <button
+                      onClick={() => handleConfirmFood(confirmedFood || 'packaged food')}
+                      disabled={loading}
+                      className="btn-secondary w-full mt-2"
+                    >
+                      Use Food Name Instead
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center">
+                        <Sparkles className="text-green-600" size={20} />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 font-medium">
+                          {needsManualReview ? 'Manual Confirmation' : 'AI Detected'}
+                        </p>
+                        <h3 className="font-bold text-gray-900 text-lg capitalize">
+                          {needsManualReview ? (customFood || 'Enter food name') : detected.label}
+                        </h3>
+                      </div>
+                      {!needsManualReview && (
+                      <div className="ml-auto">
+                        <span className="bg-primary-100 text-primary-700 px-3 py-1 rounded-full text-sm font-bold">
+                          {Math.round(detected.score * 100)}%
+                        </span>
+                      </div>
+                      )}
+                    </div>
 
-                <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                  <p className="text-xs text-gray-500 font-medium mb-2">Not correct?</p>
-                  <input
-                    type="text"
-                    value={customFood}
-                    onChange={(e) => setCustomFood(e.target.value)}
-                    placeholder="Enter food name manually..."
-                    className="input-field text-sm"
-                  />
-                </div>
+                    <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                      {detected.message && (
+                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-2 mb-3">
+                          {detected.message}
+                        </p>
+                      )}
+                      <p className="text-xs text-gray-500 font-medium mb-2">
+                        {needsManualReview ? 'Food name' : 'Not correct?'}
+                      </p>
+                      <input
+                        type="text"
+                        value={customFood}
+                        onChange={(e) => setCustomFood(e.target.value)}
+                        placeholder={needsManualReview ? 'Enter food name to continue...' : 'Enter food name manually...'}
+                        className="input-field text-sm"
+                      />
+                    </div>
 
-                <button
-                  onClick={() => handleConfirmFood(customFood || detected.label)}
-                  disabled={loading}
-                  className="btn-primary w-full"
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <Loader2 className="animate-spin" size={18} /> Fetching nutrition...
-                    </span>
-                  ) : (
-                    `Confirm: ${customFood || detected.label}`
-                  )}
-                </button>
-                <button
-                  onClick={reset}
-                  className="btn-secondary w-full mt-2"
-                >
+                    <button
+                      onClick={() => handleConfirmFood(confirmedFood)}
+                      disabled={loading || !confirmedFood}
+                      className="btn-primary w-full"
+                    >
+                      {loading ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <Loader2 className="animate-spin" size={18} /> Fetching nutrition...
+                        </span>
+                      ) : (
+                        needsManualReview ? 'Continue' : `Confirm: ${confirmedFood}`
+                      )}
+                    </button>
+                    <button onClick={startPackagedFlow} className="btn-secondary w-full mt-2">
+                      <Package size={16} className="inline mr-2" />
+                      This Is Packaged Food
+                    </button>
+                  </>
+                )}
+                <button onClick={reset} className="btn-secondary w-full mt-2">
                   <X size={16} className="inline mr-1" /> Cancel
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Package Label Step */}
+        {step === 'label' && (
+          <div className="animate-slide-up">
+            <div className="card">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 bg-amber-50 rounded-xl flex items-center justify-center">
+                  <FileText className="text-amber-600" size={24} />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 font-medium">Back Label</p>
+                  <h3 className="font-bold text-gray-900 text-lg">Upload Nutrition Label</h3>
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-500 mb-4">
+                Use the back side where ingredients, calories, protein, carbs, fat, sugar, fiber, or sodium are printed.
+              </p>
+
+              <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                <p className="text-xs text-gray-500 font-medium mb-2">Product name</p>
+                <input
+                  type="text"
+                  value={customFood}
+                  onChange={(e) => setCustomFood(e.target.value)}
+                  placeholder={detected?.label || 'Packaged food name'}
+                  className="input-field text-sm"
+                />
+              </div>
+
+              {labelImage && (
+                <img src={labelImage} alt="Package label" className="w-full h-48 object-cover rounded-xl mb-4" />
+              )}
+
+              <input
+                ref={labelInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => e.target.files?.[0] && handleLabelFile(e.target.files[0])}
+              />
+
+              <button
+                onClick={() => labelInputRef.current?.click()}
+                disabled={loading}
+                className="btn-primary w-full"
+              >
+                {loading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <Loader2 className="animate-spin" size={18} /> Reading label...
+                  </span>
+                ) : (
+                  <span className="flex items-center justify-center gap-2">
+                    <Upload size={18} /> Choose Back Label Photo
+                  </span>
+                )}
+              </button>
+
+              <div className="bg-gray-50 rounded-xl p-4 mt-4">
+                <p className="text-xs text-gray-500 font-medium mb-3">Enter values manually if the label scan is unclear</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    ['calories', 'Calories'],
+                    ['protein', 'Protein (g)'],
+                    ['carbs', 'Carbs (g)'],
+                    ['fat', 'Fat (g)'],
+                    ['sugar', 'Sugar (g)'],
+                    ['fiber', 'Fiber (g)'],
+                    ['sodium', 'Sodium (mg)'],
+                  ].map(([key, label]) => (
+                    <input
+                      key={key}
+                      type="number"
+                      value={manualNutrition[key as keyof typeof manualNutrition]}
+                      onChange={(e) => setManualNutrition({ ...manualNutrition, [key]: e.target.value })}
+                      placeholder={label}
+                      className="input-field text-sm"
+                    />
+                  ))}
+                </div>
+                <button onClick={handleManualLabelNutrition} className="btn-secondary w-full mt-3">
+                  Use Manual Label Values
+                </button>
+              </div>
+
+              <button onClick={() => setStep('confirm')} className="btn-secondary w-full mt-2">
+                Back
+              </button>
+            </div>
           </div>
         )}
 
@@ -249,6 +501,11 @@ export default function ScanPage() {
           <div className="animate-slide-up">
             <div className="card">
               <h3 className="font-bold text-gray-900 text-lg mb-4">Nutrition Facts</h3>
+              {nutrition.needsReview && (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3 mb-4">
+                  Some label values may need review.
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <div className="bg-orange-50 rounded-xl p-4 text-center">
                   <p className="text-2xl font-bold text-orange-600">{Math.round(nutrition.calories)}</p>
@@ -267,6 +524,29 @@ export default function ScanPage() {
                   <p className="text-xs text-red-400 font-medium mt-1">Fat</p>
                 </div>
               </div>
+
+              {(nutrition.sugar !== undefined || nutrition.fiber !== undefined || nutrition.sodium !== undefined) && (
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  {nutrition.sugar !== undefined && (
+                    <div className="bg-pink-50 rounded-xl p-3 text-center">
+                      <p className="font-bold text-pink-600">{Math.round(nutrition.sugar)}g</p>
+                      <p className="text-[10px] text-pink-400 font-medium mt-1">Sugar</p>
+                    </div>
+                  )}
+                  {nutrition.fiber !== undefined && (
+                    <div className="bg-emerald-50 rounded-xl p-3 text-center">
+                      <p className="font-bold text-emerald-600">{Math.round(nutrition.fiber)}g</p>
+                      <p className="text-[10px] text-emerald-400 font-medium mt-1">Fiber</p>
+                    </div>
+                  )}
+                  {nutrition.sodium !== undefined && (
+                    <div className="bg-slate-50 rounded-xl p-3 text-center">
+                      <p className="font-bold text-slate-600">{Math.round(nutrition.sodium)}mg</p>
+                      <p className="text-[10px] text-slate-400 font-medium mt-1">Sodium</p>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="mb-4">
                 <label className="text-sm font-medium text-gray-700 mb-2 block">Meal Type</label>
@@ -314,7 +594,7 @@ export default function ScanPage() {
             </div>
             <h3 className="font-bold text-gray-900 text-xl mb-2">Meal Logged!</h3>
             <p className="text-gray-500 text-sm mb-6">
-              {detected?.label || customFood} has been added to your daily log.
+              {doneFoodName} has been added to your daily log.
             </p>
             <button onClick={reset} className="btn-primary w-full max-w-xs">
               Scan Another Meal

@@ -1,5 +1,16 @@
 const API_BASE = process.env.NEXT_PUBLIC_WORKER_URL || 'https://nutrisnap-api.mrashutheboy.workers.dev'
 
+type DashboardResponse = {
+  calories_consumed?: number
+  calories_goal?: number
+  today_calories?: number
+  calorie_goal?: number
+  protein?: number
+  carbs?: number
+  fat?: number
+  recent_meals?: unknown[]
+}
+
 async function fetchWithAuth(url: string, options: RequestInit = {}) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
   const headers: Record<string, string> = {
@@ -31,6 +42,23 @@ async function fetchWithAuth(url: string, options: RequestInit = {}) {
   }
 
   return res.json()
+}
+
+function normalizeDashboard(data: DashboardResponse | null) {
+  const consumed = data?.calories_consumed ?? data?.today_calories ?? 0
+  const goal = data?.calories_goal ?? data?.calorie_goal ?? 2000
+
+  return {
+    ...data,
+    calories_consumed: consumed,
+    calories_goal: goal,
+    today_calories: consumed,
+    calorie_goal: goal,
+    protein: data?.protein ?? 0,
+    carbs: data?.carbs ?? 0,
+    fat: data?.fat ?? 0,
+    recent_meals: data?.recent_meals ?? [],
+  }
 }
 
 export const login = (email: string, password: string) =>
@@ -80,7 +108,30 @@ export const detectFood = async (input: string | File) => {
     body,
   })
 
-  if (!res.ok) throw new Error('Detection failed')
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Detection failed' }))
+    throw new Error(error.message || 'Detection failed')
+  }
+  return res.json()
+}
+
+export const analyzeNutritionLabel = async (file: File, productName?: string) => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
+  const formData = new FormData()
+  formData.append('image', file)
+  if (productName) formData.append('productName', productName)
+
+  const res = await fetch(`${API_BASE}/api/nutrition-label`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Nutrition label scan failed' }))
+    throw new Error(error.message || 'Nutrition label scan failed')
+  }
+
   return res.json()
 }
 
@@ -104,10 +155,12 @@ export const logMeal = (meal: {
     body: JSON.stringify(meal),
   })
 
-export const getDashboard = () => fetchWithAuth('/api/dashboard')
+export const getDashboard = async () => normalizeDashboard(await fetchWithAuth('/api/dashboard'))
 
 export const getHistory = (date?: string) =>
-  fetchWithAuth(`/api/history${date ? `?date=${date}` : ''}`)
+  fetchWithAuth(`/api/history${date ? `?date=${date}` : ''}`).then((data) =>
+    Array.isArray(data) ? data : data?.meals ?? []
+  )
 
 export const logWeight = (weight: number) =>
   fetchWithAuth('/api/weight', {
@@ -115,7 +168,8 @@ export const logWeight = (weight: number) =>
     body: JSON.stringify({ weight }),
   })
 
-export const getWeightHistory = () => fetchWithAuth('/api/weight')
+export const getWeightHistory = () =>
+  fetchWithAuth('/api/weight').then((data) => Array.isArray(data) ? data : data?.weights ?? [])
 
 export const logWater = (amount: number) =>
   fetchWithAuth('/api/water', {
@@ -123,7 +177,11 @@ export const logWater = (amount: number) =>
     body: JSON.stringify({ amount }),
   })
 
-export const getWater = () => fetchWithAuth('/api/water')
+export const getWater = () =>
+  fetchWithAuth('/api/water').then((data) => {
+    const amount = data?.amount ?? data?.total ?? 0
+    return { ...data, amount, total: amount }
+  })
 
 export const getWaterToday = getWater;
 
@@ -141,6 +199,7 @@ export const api = {
   register,
   uploadImage,
   detectFood,
+  analyzeNutritionLabel,
   getNutrition,
   logMeal,
   getDashboard,

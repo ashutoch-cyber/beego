@@ -62,7 +62,7 @@ User → Cloudflare Pages (Next.js) → Cloudflare Worker → Hugging Face / USD
 
 | Feature | Implementation |
 |---------|---------------|
-| AI Food Detection | Hugging Face Inference API (nateraw/food model) |
+| AI Food Detection | Hugging Face Inference API (nateraw/vit-base-food101 model) |
 | Nutrition Data | USDA FoodData Central + Open Food Facts |
 | Indian Food | Built-in database with 50+ dishes |
 | Auth | JWT tokens (jose library) |
