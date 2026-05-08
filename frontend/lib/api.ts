@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_WORKER_URL || ''
+const API_BASE = process.env.NEXT_PUBLIC_WORKER_URL || 'https://nutrisnap-api.mrashutheboy.workers.dev'
 
 async function fetchWithAuth(url: string, options: RequestInit = {}) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
