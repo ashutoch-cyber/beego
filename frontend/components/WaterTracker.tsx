@@ -5,10 +5,9 @@ import { Droplets, Plus, Minus } from 'lucide-react';
 import { logWater, getWaterToday } from '@/lib/api';
 import { cacheWater, getCachedWater } from '@/lib/offline';
 
-export default function WaterTracker() {
+export default function WaterTracker({ goal = 2500 }: { goal?: number }) {
   const [water, setWater] = useState(0);
   const [loading, setLoading] = useState(false);
-  const goal = 2500;
   const glasses = Math.floor(water / 250);
   const totalGlasses = Math.ceil(goal / 250);
 

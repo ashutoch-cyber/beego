@@ -108,7 +108,7 @@ export default function Dashboard() {
 
         {/* Water Tracker */}
         <div className="mt-4">
-          <WaterTracker />
+          <WaterTracker goal={dashboard?.water_goal || 2500} />
         </div>
 
         {/* Weight Chart */}
@@ -173,5 +173,6 @@ function mergeDashboardWithMeals(dashboard: any, meals: any[]) {
     protein_goal: Number(dashboard?.protein_goal) || 150,
     carbs_goal: Number(dashboard?.carbs_goal) || 250,
     fat_goal: Number(dashboard?.fat_goal) || 65,
+    water_goal: Number(dashboard?.water_goal) || 2500,
   };
 }

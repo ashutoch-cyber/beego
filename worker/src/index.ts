@@ -110,6 +110,7 @@ export default {
       if (path === '/api/log' && request.method === 'POST') return await handleLog(request, env, userId);
       if (path === '/api/dashboard' && request.method === 'GET') return await handleDashboard(request, env, userId);
       if (path === '/api/history' && request.method === 'GET') return await handleHistory(request, env, userId);
+      if (path === '/api/export' && request.method === 'GET') return await handleExport(request, env, userId);
       if (path === '/api/weight') return request.method === 'POST' ? await handleWeight(request, env, userId) : await handleGetWeight(request, env, userId);
       if (path === '/api/water') return request.method === 'POST' ? await handleWater(request, env, userId) : await handleGetWater(request, env, userId);
       if (path === '/api/profile') return request.method === 'GET' ? await handleProfile(request, env, userId) : await handleUpdateProfile(request, env, userId);
@@ -339,9 +340,27 @@ async function handleHistory(request: Request, env: Env, userId: number): Promis
   return jsonResponse({ meals: meals.results || [] });
 }
 
+async function handleExport(request: Request, env: Env, userId: number): Promise<Response> {
+  const [profile, meals, weights, water] = await Promise.all([
+    env.DB.prepare('SELECT id, email, calorie_goal, protein_goal, carbs_goal, fat_goal, water_goal, weight_goal, current_weight, created_at FROM users WHERE id = ?').bind(userId).first(),
+    env.DB.prepare('SELECT id, food_name, calories, protein, carbs, fat, meal_type, date, created_at FROM meals WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 2000').bind(userId).all(),
+    env.DB.prepare('SELECT id, weight, date, created_at FROM weight_logs WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 1000').bind(userId).all(),
+    env.DB.prepare('SELECT id, amount, date, created_at FROM water_logs WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 1000').bind(userId).all(),
+  ]);
+
+  return jsonResponse({
+    profile,
+    meals: meals.results || [],
+    weights: weights.results || [],
+    water: water.results || [],
+    exported_at: new Date().toISOString(),
+  });
+}
+
 async function handleWeight(request: Request, env: Env, userId: number): Promise<Response> {
   const { weight } = await request.json() as any;
   await env.DB.prepare('INSERT INTO weight_logs (user_id, weight, date) VALUES (?, ?, date(\'now\'))').bind(userId, weight).run();
+  await env.DB.prepare('UPDATE users SET current_weight = ? WHERE id = ?').bind(weight, userId).run();
   return jsonResponse({ message: 'Logged' });
 }
 

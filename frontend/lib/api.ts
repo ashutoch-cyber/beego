@@ -11,6 +11,7 @@ type DashboardResponse = {
   carbs_goal?: number
   fat?: number
   fat_goal?: number
+  water_goal?: number
   recent_meals?: unknown[]
 }
 
@@ -63,6 +64,7 @@ function normalizeDashboard(data: DashboardResponse | null) {
     carbs_goal: data?.carbs_goal ?? 250,
     fat: data?.fat ?? 0,
     fat_goal: data?.fat_goal ?? 65,
+    water_goal: data?.water_goal ?? 2500,
     recent_meals: data?.recent_meals ?? [],
   }
 }
@@ -199,6 +201,8 @@ export const updateProfile = (data: Record<string, number>) =>
     body: JSON.stringify(data),
   })
 
+export const exportData = () => fetchWithAuth('/api/export')
+
 // Also export the api object for backward compatibility if needed
 export const api = {
   login,
@@ -216,4 +220,5 @@ export const api = {
   getWater,
   getProfile,
   updateProfile,
+  exportData,
 }
