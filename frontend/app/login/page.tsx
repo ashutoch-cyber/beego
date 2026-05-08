@@ -16,11 +16,17 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
+      let data;
       if (isLogin) {
-        await api.login(email, password);
+        data = await api.login(email, password);
       } else {
-        await api.register(email, password);
+        data = await api.register(email, password);
       }
+      
+      if (data && data.token) {
+        localStorage.setItem('token', data.token);
+      }
+      
       window.location.href = '/';
     } catch (err: any) {
       setError(err.message || 'Authentication failed');
