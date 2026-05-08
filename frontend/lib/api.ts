@@ -6,8 +6,11 @@ type DashboardResponse = {
   today_calories?: number
   calorie_goal?: number
   protein?: number
+  protein_goal?: number
   carbs?: number
+  carbs_goal?: number
   fat?: number
+  fat_goal?: number
   recent_meals?: unknown[]
 }
 
@@ -55,8 +58,11 @@ function normalizeDashboard(data: DashboardResponse | null) {
     today_calories: consumed,
     calorie_goal: goal,
     protein: data?.protein ?? 0,
+    protein_goal: data?.protein_goal ?? 150,
     carbs: data?.carbs ?? 0,
+    carbs_goal: data?.carbs_goal ?? 250,
     fat: data?.fat ?? 0,
+    fat_goal: data?.fat_goal ?? 65,
     recent_meals: data?.recent_meals ?? [],
   }
 }

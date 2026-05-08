@@ -187,55 +187,53 @@ async function handleUpload(request: Request, env: Env, userId: number): Promise
 }
 
 async function handleDetect(request: Request, env: Env): Promise<Response> {
-  const contentType = request.headers.get('content-type') || '';
-  let body: ArrayBuffer | null = null;
-  let imageType = 'application/octet-stream';
+  try {
+    const contentType = request.headers.get('content-type') || '';
+    let body: ArrayBuffer | null = null;
+    let imageType = 'application/octet-stream';
 
-  if (contentType.includes('multipart/form-data')) {
-    const formData = await request.formData();
-    const image = formData.get('image');
-    if (!(image instanceof File)) return jsonResponse({ message: 'No image file uploaded' }, 400);
-    imageType = image.type || imageType;
-    body = await image.arrayBuffer();
-  } else {
-    const { imageUrl } = await request.json().catch(() => ({})) as any;
-    // If it's a URL, we'd need to fetch it, but without R2 we'll mostly be receiving direct uploads
-    if (imageUrl && imageUrl.startsWith('http')) {
-      const res = await fetch(imageUrl);
-      if (!res.ok) return jsonResponse({ message: 'Could not fetch image URL' }, 400);
-      imageType = res.headers.get('content-type') || imageType;
-      body = await res.arrayBuffer();
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData();
+      const image = formData.get('image');
+      if (!(image instanceof File)) return jsonResponse({ message: 'No image file uploaded' }, 400);
+      imageType = image.type || imageType;
+      body = await image.arrayBuffer();
+    } else {
+      const { imageUrl } = await request.json().catch(() => ({})) as any;
+      // If it's a URL, we'd need to fetch it, but without R2 we'll mostly be receiving direct uploads
+      if (imageUrl && imageUrl.startsWith('http')) {
+        const res = await fetch(imageUrl);
+        if (!res.ok) return jsonResponse({ message: 'Could not fetch image URL' }, 400);
+        imageType = res.headers.get('content-type') || imageType;
+        body = await res.arrayBuffer();
+      }
     }
+
+    if (!body) return jsonResponse({ message: 'No image data' }, 400);
+
+    const [food, objects] = await Promise.all([
+      detectWithHuggingFace(body, imageType, env),
+      detectObjectsWithHuggingFace(body, imageType, env),
+    ]);
+
+    const objectWarning = classifyObjectWarning(objects, food);
+    if (objectWarning) return jsonResponse(objectWarning);
+
+    const packagedFromObject = classifyPackagedFood(objects, '', food);
+    if (packagedFromObject) return jsonResponse(packagedFromObject);
+
+    if (food && food.score >= 0.5) return jsonResponse({ ...food, kind: 'food' });
+
+    const ocrText = await extractTextWithHuggingFace(body, imageType, env);
+    const packaged = classifyPackagedFood(objects, ocrText, food);
+    if (packaged) return jsonResponse(packaged);
+
+    if (food) return jsonResponse({ ...food, kind: 'food' });
+
+    return manualDetectionResponse();
+  } catch {
+    return manualDetectionResponse('AI detection is unavailable. Enter the food name manually.');
   }
-
-  if (!body) return jsonResponse({ message: 'No image data' }, 400);
-
-  const [food, objects] = await Promise.all([
-    detectWithHuggingFace(body, imageType, env),
-    detectObjectsWithHuggingFace(body, imageType, env),
-  ]);
-
-  const objectWarning = classifyObjectWarning(objects, food);
-  if (objectWarning) return jsonResponse(objectWarning);
-
-  const packagedFromObject = classifyPackagedFood(objects, '', food);
-  if (packagedFromObject) return jsonResponse(packagedFromObject);
-
-  if (food && food.score >= 0.5) return jsonResponse({ ...food, kind: 'food' });
-
-  const ocrText = await extractTextWithHuggingFace(body, imageType, env);
-  const packaged = classifyPackagedFood(objects, ocrText, food);
-  if (packaged) return jsonResponse(packaged);
-
-  if (food) return jsonResponse({ ...food, kind: 'food' });
-
-  return jsonResponse({
-    label: '',
-    score: 0,
-    kind: 'manual',
-    needsReview: true,
-    message: 'AI detection is temporarily unavailable. Enter the food name manually.',
-  } satisfies DetectionResult);
 }
 
 async function handleNutritionLabel(request: Request, env: Env): Promise<Response> {
@@ -266,6 +264,16 @@ async function handleNutritionLabel(request: Request, env: Env): Promise<Respons
     source: rawText ? 'ocr' : 'manual',
     needsReview: true,
   } satisfies NutritionResult);
+}
+
+function manualDetectionResponse(message = 'AI detection is temporarily unavailable. Enter the food name manually.') {
+  return jsonResponse({
+    label: '',
+    score: 0,
+    kind: 'manual',
+    needsReview: true,
+    message,
+  } satisfies DetectionResult);
 }
 
 async function handleNutrition(request: Request, env: Env): Promise<Response> {

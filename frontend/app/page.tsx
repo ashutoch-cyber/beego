@@ -27,7 +27,7 @@ export default function Dashboard() {
         getDashboard(),
         getHistory(),
       ]);
-      setDashboard(dashData);
+      setDashboard(mergeDashboardWithMeals(dashData, historyData));
       setMeals(historyData.slice(0, 5));
     } catch {
       const cached = await getCachedMeals();
@@ -98,8 +98,11 @@ export default function Dashboard() {
           <h3 className="font-bold text-gray-900 mb-4">Macro Breakdown</h3>
           <MacroBar
             protein={dashboard?.protein || 0}
+            proteinGoal={dashboard?.protein_goal || 150}
             carbs={dashboard?.carbs || 0}
+            carbsGoal={dashboard?.carbs_goal || 250}
             fat={dashboard?.fat || 0}
+            fatGoal={dashboard?.fat_goal || 65}
           />
         </div>
 
@@ -145,4 +148,30 @@ function getGreeting() {
   if (hour < 12) return 'Morning';
   if (hour < 17) return 'Afternoon';
   return 'Evening';
+}
+
+function mergeDashboardWithMeals(dashboard: any, meals: any[]) {
+  const totals = meals.reduce(
+    (sum, meal) => ({
+      calories: sum.calories + (Number(meal.calories) || 0),
+      protein: sum.protein + (Number(meal.protein) || 0),
+      carbs: sum.carbs + (Number(meal.carbs) || 0),
+      fat: sum.fat + (Number(meal.fat) || 0),
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 },
+  );
+
+  const backendHasMacros = Number(dashboard?.protein) > 0 || Number(dashboard?.carbs) > 0 || Number(dashboard?.fat) > 0;
+
+  return {
+    ...dashboard,
+    calories_consumed: Number(dashboard?.calories_consumed ?? dashboard?.today_calories ?? totals.calories) || 0,
+    calories_goal: Number(dashboard?.calories_goal ?? dashboard?.calorie_goal ?? 2000) || 2000,
+    protein: backendHasMacros ? Number(dashboard?.protein) || 0 : totals.protein,
+    carbs: backendHasMacros ? Number(dashboard?.carbs) || 0 : totals.carbs,
+    fat: backendHasMacros ? Number(dashboard?.fat) || 0 : totals.fat,
+    protein_goal: Number(dashboard?.protein_goal) || 150,
+    carbs_goal: Number(dashboard?.carbs_goal) || 250,
+    fat_goal: Number(dashboard?.fat_goal) || 65,
+  };
 }
