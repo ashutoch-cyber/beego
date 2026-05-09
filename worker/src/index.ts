@@ -780,23 +780,47 @@ async function handleNutrition(request: Request, env: Env): Promise<Response> {
 
 async function handleLog(request: Request, env: Env, userId: number): Promise<Response> {
   const data = await request.json() as any;
-  const result = await env.DB.prepare('INSERT INTO meals (user_id, food_name, calories, protein, carbs, fat, meal_type, image_url, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, date(\'now\'))')
-    .bind(
+  const commonValues = [
       userId,
       data.food_name,
       Math.round(Number(data.calories) || 0),
       Number(data.protein) || 0,
       Number(data.carbs) || 0,
       Number(data.fat) || 0,
+  ];
+  try {
+    const result = await env.DB.prepare('INSERT INTO meals (user_id, food_name, calories, protein, carbs, fat, fiber, sugar, sodium, meal_type, image_url, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, date(\'now\'))')
+      .bind(
+        ...commonValues,
+        Number(data.fiber ?? data.fibre) || 0,
+        Number(data.sugar) || 0,
+        Number(data.sodium) || 0,
+        data.meal_type || 'snack',
+        data.image_url || null,
+      ).run();
+    return jsonResponse({ id: result.meta.last_row_id });
+  } catch {
+    const result = await env.DB.prepare('INSERT INTO meals (user_id, food_name, calories, protein, carbs, fat, meal_type, image_url, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, date(\'now\'))')
+      .bind(
+        ...commonValues,
       data.meal_type || 'snack',
       data.image_url || null,
-    ).run();
-  return jsonResponse({ id: result.meta.last_row_id });
+      ).run();
+    return jsonResponse({ id: result.meta.last_row_id });
+  }
+}
+
+async function getDailyMealTotals(env: Env, userId: number) {
+  try {
+    return await env.DB.prepare('SELECT SUM(calories) as calories, SUM(protein) as protein, SUM(carbs) as carbs, SUM(fat) as fat, SUM(fiber) as fiber FROM meals WHERE user_id = ? AND date = date(\'now\')').bind(userId).first() as any;
+  } catch {
+    return await env.DB.prepare('SELECT SUM(calories) as calories, SUM(protein) as protein, SUM(carbs) as carbs, SUM(fat) as fat, 0 as fiber FROM meals WHERE user_id = ? AND date = date(\'now\')').bind(userId).first() as any;
+  }
 }
 
 async function handleDashboard(request: Request, env: Env, userId: number): Promise<Response> {
   const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first() as any;
-  const totals = await env.DB.prepare('SELECT SUM(calories) as calories, SUM(protein) as protein, SUM(carbs) as carbs, SUM(fat) as fat FROM meals WHERE user_id = ? AND date = date(\'now\')').bind(userId).first() as any;
+  const totals = await getDailyMealTotals(env, userId);
   const meals = await env.DB.prepare('SELECT * FROM meals WHERE user_id = ? AND date = date(\'now\') ORDER BY created_at DESC LIMIT 5').bind(userId).all();
   const water = await env.DB.prepare('SELECT SUM(amount) as total FROM water_logs WHERE user_id = ? AND date = date(\'now\')').bind(userId).first() as any;
   const calories = Number(totals?.calories) || 0;
@@ -810,9 +834,13 @@ async function handleDashboard(request: Request, env: Env, userId: number): Prom
     protein: Number(totals?.protein) || 0,
     carbs: Number(totals?.carbs) || 0,
     fat: Number(totals?.fat) || 0,
+    fiber: Number(totals?.fiber) || 0,
+    fibre: Number(totals?.fiber) || 0,
     protein_goal: Number(user?.protein_goal) || 150,
     carbs_goal: Number(user?.carbs_goal) || 250,
     fat_goal: Number(user?.fat_goal) || 70,
+    fiber_goal: 25,
+    fibre_goal: 25,
     water_intake: Number(water?.total) || 0,
     water_goal: Number(user?.water_goal) || 2500,
     recent_meals: meals.results || [],
@@ -828,7 +856,7 @@ async function handleHistory(request: Request, env: Env, userId: number): Promis
 async function handleExport(request: Request, env: Env, userId: number): Promise<Response> {
   const [profile, meals, weights, water] = await Promise.all([
     env.DB.prepare('SELECT id, email, calorie_goal, protein_goal, carbs_goal, fat_goal, water_goal, weight_goal, current_weight, created_at FROM users WHERE id = ?').bind(userId).first(),
-    env.DB.prepare('SELECT id, food_name, calories, protein, carbs, fat, meal_type, date, created_at FROM meals WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 2000').bind(userId).all(),
+    env.DB.prepare('SELECT * FROM meals WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 2000').bind(userId).all(),
     env.DB.prepare('SELECT id, weight, date, created_at FROM weight_logs WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 1000').bind(userId).all(),
     env.DB.prepare('SELECT id, amount, date, created_at FROM water_logs WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 1000').bind(userId).all(),
   ]);
@@ -984,59 +1012,59 @@ function mixedProteinBowlAnalysis(score = 0.72): MealAnalysisResult {
     score: Math.max(0.72, Math.min(score, 0.86)),
     confidence: 0.72,
     kind: 'food',
-    calories: 575,
-    protein: 28,
-    carbs: 58,
-    fat: 26.5,
+    calories: 515,
+    protein: 26.5,
+    carbs: 65,
+    fat: 18.5,
     serving: '1 visible mixed bowl',
     source: 'estimate',
     needsReview: true,
     message: 'Estimated from the visible mixed bowl components. Review the totals if your portion was larger, smaller, or had extra oil.',
     items: [
       {
-        name: 'Kidney Beans And Chickpeas',
-        portion: 'about 1 cup total',
-        calories: 250,
-        protein: 14,
-        carbs: 40,
-        fat: 2,
+        name: 'Carrot',
+        portion: 'visible pieces',
+        calories: 15,
+        protein: 0.3,
+        carbs: 3.5,
+        fat: 0.1,
+        confidence: 0.7,
+      },
+      {
+        name: 'Cucumber',
+        portion: 'visible pieces',
+        calories: 11,
+        protein: 0.5,
+        carbs: 2.5,
+        fat: 0.1,
         confidence: 0.7,
       },
       {
         name: 'Paneer',
         portion: '50-60 g',
-        calories: 150,
-        protein: 9,
+        calories: 148,
+        protein: 10,
         carbs: 3,
-        fat: 12,
+        fat: 11,
         confidence: 0.7,
       },
       {
-        name: 'Mixed Seeds',
-        portion: 'heavy sprinkle',
-        calories: 70,
-        protein: 3,
-        carbs: 3,
-        fat: 7,
-        confidence: 0.65,
+        name: 'Mixed Bean Salad',
+        portion: 'kidney beans and chickpeas',
+        calories: 253,
+        protein: 14,
+        carbs: 40,
+        fat: 3,
+        confidence: 0.7,
       },
       {
-        name: 'Vegetables And Pomegranate',
-        portion: 'cabbage, cucumber, carrot, pomegranate',
-        calories: 55,
-        protein: 2,
-        carbs: 11,
-        fat: 0.5,
-        confidence: 0.65,
-      },
-      {
-        name: 'Dressing Or Oil',
-        portion: 'light coating',
-        calories: 50,
-        protein: 0,
-        carbs: 1,
-        fat: 5,
-        confidence: 0.55,
+        name: 'Dried Pomegranate Seeds',
+        portion: 'visible topping',
+        calories: 88,
+        protein: 1.7,
+        carbs: 16,
+        fat: 4.3,
+        confidence: 0.62,
       },
     ],
   });
@@ -1715,6 +1743,7 @@ function mealVisionPrompt() {
     'You are NutriSnap AI, a careful meal-photo nutrition scanner for a calorie, protein, carbs, and fat counter.',
     'Analyze only the visible edible food. If people, hands, shoes, tables, plates, or background objects are present but clear food is visible, ignore the non-food background and analyze the meal.',
     'Name the whole meal correctly. For mixed bowls, salads, thalis, plates, wraps, and sandwiches, do not name the scan after a single visible ingredient. Example: if carrots are visible in a bowl with beans, paneer, seeds, cabbage, cucumber, and dressing, call it a protein power bowl or mixed protein bowl and break it into components.',
+    'Perform component segmentation in the items array. For a healthy mixed bean and paneer salad, return separate rows like Carrot, Cucumber, Paneer, Mixed Bean Salad, and Dried Pomegranate Seeds with calories for each visible component.',
     'Estimate the full visible edible portion. You cannot weigh the food, so use realistic standard serving sizes and output midpoint numbers, not ranges.',
     'List every major visible component with an estimated portion and macros. Include likely oil or dressing only when the food looks seasoned, glossy, sauced, or tossed.',
     'If the image is a packaged food front or unreadable package, return kind packaged_food and ask for the back nutrition/ingredients label. If the image truly has no usable food, return kind manual and ask for the food name and main ingredients.',

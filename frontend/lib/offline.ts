@@ -10,6 +10,7 @@ interface PendingMeal {
   protein: number
   carbs: number
   fat: number
+  fiber?: number
   meal_type: string
   image_url?: string
   date: string

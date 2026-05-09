@@ -11,6 +11,10 @@ type DashboardResponse = {
   carbs_goal?: number
   fat?: number
   fat_goal?: number
+  fiber?: number
+  fibre?: number
+  fiber_goal?: number
+  fibre_goal?: number
   water_goal?: number
   recent_meals?: unknown[]
 }
@@ -78,6 +82,10 @@ function normalizeDashboard(data: DashboardResponse | null) {
     carbs_goal: data?.carbs_goal ?? 250,
     fat: data?.fat ?? 0,
     fat_goal: data?.fat_goal ?? 65,
+    fiber: data?.fiber ?? data?.fibre ?? 0,
+    fibre: data?.fiber ?? data?.fibre ?? 0,
+    fiber_goal: data?.fiber_goal ?? data?.fibre_goal ?? 25,
+    fibre_goal: data?.fiber_goal ?? data?.fibre_goal ?? 25,
     water_goal: data?.water_goal ?? 2500,
     recent_meals: data?.recent_meals ?? [],
   }
@@ -173,6 +181,7 @@ export const logMeal = (meal: {
   protein: number
   carbs: number
   fat: number
+  fiber?: number
   meal_type: string
   image_url?: string
 }) =>

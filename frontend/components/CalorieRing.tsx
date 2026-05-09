@@ -10,19 +10,19 @@ interface CalorieRingProps {
 export default function CalorieRing({
   consumed,
   goal,
-  size = 200,
-  strokeWidth = 14,
+  size = 214,
+  strokeWidth = 16,
 }: CalorieRingProps) {
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
-  const percentage = Math.min(consumed / goal, 1);
+  const rawPercentage = goal > 0 ? consumed / goal : 0;
+  const percentage = Math.min(rawPercentage, 1);
   const strokeDashoffset = circumference - percentage * circumference;
-  const remaining = Math.max(goal - consumed, 0);
 
   const getColor = () => {
-    if (percentage > 1) return '#ef4444';
-    if (percentage > 0.85) return '#f97316';
-    return '#22c55e';
+    if (rawPercentage > 1) return '#dc2626';
+    if (rawPercentage > 0.85) return '#f59e0b';
+    return '#0f7a3b';
   };
 
   return (
@@ -33,7 +33,7 @@ export default function CalorieRing({
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="#f3f4f6"
+          stroke="#e8f1ec"
           strokeWidth={strokeWidth}
         />
         <circle
@@ -46,13 +46,16 @@ export default function CalorieRing({
           strokeLinecap="round"
           strokeDasharray={circumference}
           strokeDashoffset={strokeDashoffset}
+          filter="drop-shadow(0 8px 14px rgba(15, 122, 59, 0.18))"
           className="transition-all duration-1000 ease-out"
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-3xl font-bold text-gray-900">{remaining}</span>
-        <span className="text-xs text-gray-500 font-medium">remaining</span>
-        <span className="text-sm text-gray-400 mt-1">/ {goal} kcal</span>
+        <span className="text-4xl font-black tracking-tight text-[#103f27]">{Math.round(consumed)}</span>
+        <span className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-[#65806f]">of {Math.round(goal)} Cal</span>
+        <span className="mt-3 rounded-full bg-[#edf6f1] px-3 py-1 text-xs font-bold text-[#0f7a3b]">
+          {Math.round(rawPercentage * 100)}% consumed
+        </span>
       </div>
     </div>
   );

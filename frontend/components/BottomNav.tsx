@@ -15,8 +15,8 @@ export default function BottomNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 shadow-[0_-4px_20px_rgba(0,0,0,0.05)] z-50">
-      <div className="max-w-lg mx-auto flex justify-around items-center h-16">
+    <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-[#dce8e1] bg-white/95 shadow-[0_-8px_30px_rgba(15,65,38,0.08)] backdrop-blur">
+      <div className="mx-auto flex h-[72px] max-w-lg items-center justify-around">
         {navItems.map((item) => {
           const isActive = pathname === item.href;
           const Icon = item.icon;
@@ -24,16 +24,16 @@ export default function BottomNav() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex flex-col items-center justify-center w-16 h-full transition-all duration-200 ${
+              className={`flex h-full w-16 flex-col items-center justify-center transition-all duration-200 ${
                 isActive
-                  ? 'text-primary-600 -translate-y-1'
-                  : 'text-gray-400 hover:text-gray-600'
+                  ? 'text-[#0f7a3b] -translate-y-1'
+                  : 'text-[#8aa093] hover:text-[#315743]'
               }`}
             >
-              <div className={`p-2 rounded-xl transition-all ${isActive ? 'bg-primary-50' : ''}`}>
+              <div className={`rounded-2xl p-2 transition-all ${isActive ? 'bg-[#e5f5ec] shadow-sm' : ''}`}>
                 <Icon size={22} strokeWidth={isActive ? 2.5 : 2} />
               </div>
-              <span className={`text-[10px] font-medium mt-0.5 ${isActive ? 'opacity-100' : 'opacity-70'}`}>
+              <span className={`mt-0.5 text-[10px] font-extrabold ${isActive ? 'opacity-100' : 'opacity-70'}`}>
                 {item.label}
               </span>
             </Link>

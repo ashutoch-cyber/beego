@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
-import { Camera, Upload, X, Check, AlertTriangle, Sparkles, Loader2, Package, FileText } from 'lucide-react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { Camera, Upload, X, Check, AlertTriangle, Sparkles, Loader2, Package, FileText, Images, Clock, CheckCircle2, Utensils } from 'lucide-react';
 import BottomNav from '@/components/BottomNav';
 import { analyzeMeal, analyzeNutritionLabel, detectFood, getNutrition, logMeal } from '@/lib/api';
 import { cacheMeal } from '@/lib/offline';
@@ -43,6 +43,15 @@ type Nutrition = {
   }>;
 };
 
+type SnapGalleryItem = {
+  id: string;
+  image: string;
+  foodName: string;
+  mealType: string;
+  capturedAt: string;
+  status: 'Processing' | 'Auto-Tracked' | 'Needs Review';
+};
+
 export default function ScanPage() {
   const [image, setImage] = useState<string | null>(null);
   const [imageKey, setImageKey] = useState<string>('');
@@ -55,9 +64,17 @@ export default function ScanPage() {
   const [manualIngredients, setManualIngredients] = useState('');
   const [manualNutrition, setManualNutrition] = useState({ calories: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', sodium: '' });
   const [mealType, setMealType] = useState('breakfast');
+  const [snapOverlayOpen, setSnapOverlayOpen] = useState(false);
+  const [snapGallery, setSnapGallery] = useState<SnapGalleryItem[]>([]);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
   const labelInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setSnapGallery(loadSnapGallery());
+  }, []);
 
   function normalizeNutritionResult(data: any, fallbackName = 'Food'): Nutrition {
     const items = Array.isArray(data?.items)
@@ -115,15 +132,33 @@ export default function ScanPage() {
   const handleFile = useCallback(async (file: File) => {
     setError('');
     setLoading(true);
+    setSnapOverlayOpen(false);
+    const capturedAt = new Date(file.lastModified || Date.now());
+    const inferredMeal = inferMealType(capturedAt);
+    let snapId = '';
     try {
-      const reader = new FileReader();
-      reader.onload = (e) => setImage(e.target?.result as string);
-      reader.readAsDataURL(file);
+      const imageData = await readFileAsDataUrl(file);
+      setImage(imageData);
+      setMealType(inferredMeal);
+      snapId = addSnapGalleryItem({
+        image: imageData,
+        foodName: 'Analyzing food',
+        mealType: inferredMeal,
+        capturedAt: capturedAt.toISOString(),
+        status: 'Processing',
+      });
+      setSnapGallery(loadSnapGallery());
 
       setStep('detect');
       const scanRes = await analyzeMeal(file);
       const nextDetection = detectionFromAnalysis(scanRes);
       setDetected(nextDetection);
+      updateSnapGalleryItem(snapId, {
+        foodName: scanRes?.food_name || nextDetection.label || 'Food scan',
+        mealType: inferredMeal,
+        status: nextDetection.kind === 'food' && !nextDetection.needsLabel ? 'Auto-Tracked' : 'Needs Review',
+      });
+      setSnapGallery(loadSnapGallery());
 
       if (nextDetection.kind === 'not_food' || nextDetection.kind === 'packaged_food' || nextDetection.needsLabel || nextDetection.kind === 'manual') {
         setStep('confirm');
@@ -138,6 +173,14 @@ export default function ScanPage() {
       try {
         const detectRes = await detectFood(file);
         setDetected(detectRes);
+        if (snapId) {
+          updateSnapGalleryItem(snapId, {
+            foodName: detectRes?.label || 'Food scan',
+            mealType: inferredMeal,
+            status: detectRes?.kind === 'food' ? 'Auto-Tracked' : 'Needs Review',
+          });
+          setSnapGallery(loadSnapGallery());
+        }
         setStep('confirm');
       } catch {
         setDetected({
@@ -147,6 +190,10 @@ export default function ScanPage() {
           needsReview: true,
           message: 'I could not identify this meal confidently. Add its name and main ingredients so calories and macros can still be estimated.',
         });
+        if (snapId) {
+          updateSnapGalleryItem(snapId, { foodName: 'Food scan', status: 'Needs Review' });
+          setSnapGallery(loadSnapGallery());
+        }
         setError('');
         setStep('confirm');
       }
@@ -258,7 +305,7 @@ export default function ScanPage() {
     setStep('label');
   }
 
-  async function handleLogMeal() {
+  async function saveMeal(selectedMealType: string) {
     if (!nutrition) return;
 
     setLoading(true);
@@ -271,7 +318,8 @@ export default function ScanPage() {
         protein: nutrition.protein,
         carbs: nutrition.carbs,
         fat: nutrition.fat,
-        meal_type: mealType,
+        fiber: nutrition.fiber,
+        meal_type: selectedMealType,
         image_url: imageUrl,
         date: new Date().toISOString().split('T')[0],
       };
@@ -286,7 +334,8 @@ export default function ScanPage() {
         protein: nutrition.protein,
         carbs: nutrition.carbs,
         fat: nutrition.fat,
-        meal_type: mealType,
+        fiber: nutrition.fiber,
+        meal_type: selectedMealType,
         image_url: imageUrl,
         date: new Date().toISOString().split('T')[0],
       });
@@ -294,6 +343,15 @@ export default function ScanPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleLogMeal() {
+    await saveMeal(mealType);
+  }
+
+  async function handleQuickLog(selectedMealType: string) {
+    setMealType(selectedMealType);
+    await saveMeal(selectedMealType);
   }
 
   function reset() {
@@ -319,10 +377,11 @@ export default function ScanPage() {
   const currentStepIndex = progressSteps.indexOf(step);
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-24">
-      <div className="bg-gradient-to-br from-primary-600 to-primary-700 text-white pt-12 pb-8 px-6 rounded-b-[2.5rem]">
-        <h1 className="text-2xl font-bold">AI Food Scanner</h1>
-        <p className="text-primary-100 text-sm mt-1">Snap a photo and let AI detect your food</p>
+    <div className="min-h-screen bg-[#f5faf7] pb-24">
+      <div className="rounded-b-[2.5rem] bg-[#0f3f27] px-6 pb-8 pt-12 text-white">
+        <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#9ed8b6]">Healthify Snap</p>
+        <h1 className="mt-1 text-2xl font-black">AI Food Scanner</h1>
+        <p className="mt-1 text-sm font-medium text-[#c7ead4]">Snap a meal and log segmented ingredients</p>
       </div>
 
       <div className="max-w-lg mx-auto px-4 -mt-4">
@@ -356,14 +415,28 @@ export default function ScanPage() {
 
         {/* Upload Step */}
         {step === 'upload' && (
-          <div className="card text-center py-12">
-            <div className="w-20 h-20 bg-primary-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <Camera className="text-primary-600" size={36} />
+          <div className="space-y-4">
+            <div className="rounded-[2rem] bg-[#0f3f27] p-5 text-white shadow-[0_18px_45px_rgba(15,65,38,0.18)]">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#9ed8b6]">Healthify AI</p>
+                  <h3 className="mt-2 text-2xl font-black">Snap Food</h3>
+                  <p className="mt-1 text-sm font-medium text-[#c7ead4]">Detect food and segment visible ingredients.</p>
+                </div>
+                <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-white/12">
+                  <Camera size={30} />
+                </div>
+              </div>
+              <button
+                onClick={() => setSnapOverlayOpen(true)}
+                disabled={loading}
+                className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-6 py-4 font-black text-[#0f7a3b] shadow-lg shadow-black/10"
+              >
+                {loading ? <Loader2 className="animate-spin" size={18} /> : <Camera size={18} />}
+                Open Snap Food
+              </button>
             </div>
-            <h3 className="font-bold text-gray-900 text-lg mb-2">Take a Photo</h3>
-            <p className="text-gray-500 text-sm mb-6 max-w-xs mx-auto">
-              Point your camera at your meal. Our AI will identify the food and estimate calories.
-            </p>
+
             <input
               ref={fileInputRef}
               type="file"
@@ -371,21 +444,62 @@ export default function ScanPage() {
               className="hidden"
               onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
             />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={loading}
-              className="btn-primary w-full max-w-xs"
-            >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <Loader2 className="animate-spin" size={18} /> Processing...
-                </span>
-              ) : (
-                <span className="flex items-center justify-center gap-2">
-                  <Upload size={18} /> Choose Photo
-                </span>
-              )}
-            </button>
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+            />
+            <input
+              ref={galleryInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+            />
+
+            <SnapGallery items={snapGallery} />
+          </div>
+        )}
+
+        {snapOverlayOpen && (
+          <div className="fixed inset-0 z-[80] flex items-end bg-[#071b12]/80 p-4 backdrop-blur-sm">
+            <div className="mx-auto w-full max-w-lg rounded-[2rem] bg-white p-5 shadow-2xl">
+              <div className="mb-5 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#0f7a3b]">Snap Food</p>
+                  <h3 className="mt-1 text-xl font-black text-[#183c2a]">Choose photo source</h3>
+                </div>
+                <button
+                  onClick={() => setSnapOverlayOpen(false)}
+                  className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#eef6f2] text-[#315743]"
+                  aria-label="Close snap food"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => cameraInputRef.current?.click()}
+                  className="flex flex-col items-center justify-center rounded-[1.5rem] bg-[#0f7a3b] p-5 text-white"
+                >
+                  <Camera size={28} />
+                  <span className="mt-3 text-sm font-black">Camera</span>
+                </button>
+                <button
+                  onClick={() => galleryInputRef.current?.click()}
+                  className="flex flex-col items-center justify-center rounded-[1.5rem] bg-[#eef6f2] p-5 text-[#183c2a]"
+                >
+                  <Images size={28} />
+                  <span className="mt-3 text-sm font-black">Google Photos</span>
+                </button>
+              </div>
+              <p className="mt-4 text-center text-xs font-semibold text-[#7b9587]">
+                Photo time is used to suggest Breakfast, Lunch, Dinner, or Snack.
+              </p>
+            </div>
           </div>
         )}
 
@@ -837,6 +951,19 @@ export default function ScanPage() {
                 </div>
               </div>
 
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                {['lunch', 'snack'].map((type) => (
+                  <button
+                    key={type}
+                    onClick={() => handleQuickLog(type)}
+                    disabled={loading}
+                    className="rounded-2xl bg-[#0f3f27] px-3 py-3 text-sm font-black capitalize text-white transition-all active:scale-95 disabled:opacity-60"
+                  >
+                    {type === 'snack' ? 'Log as Morning Snack' : 'Log as Lunch'}
+                  </button>
+                ))}
+              </div>
+
               <button
                 onClick={handleLogMeal}
                 disabled={loading}
@@ -885,6 +1012,104 @@ function toNumber(value: unknown) {
 
 function roundMacro(value: unknown) {
   return Math.round(toNumber(value) * 10) / 10;
+}
+
+function SnapGallery({ items }: { items: SnapGalleryItem[] }) {
+  if (!items.length) {
+    return (
+      <div className="rounded-[1.5rem] border border-[#dce8e1] bg-white p-5 text-center">
+        <Images className="mx-auto text-[#8aa093]" size={28} />
+        <p className="mt-2 text-sm font-black text-[#183c2a]">Snap Gallery</p>
+        <p className="mt-1 text-xs font-semibold text-[#7b9587]">Recent analyzed food photos will appear here.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[1.5rem] border border-[#dce8e1] bg-white p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <p className="text-sm font-black text-[#183c2a]">Snap Gallery</p>
+          <p className="text-xs font-semibold text-[#7b9587]">Recently captured food photos</p>
+        </div>
+        <CheckCircle2 className="text-[#0f7a3b]" size={18} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {items.slice(0, 4).map((item) => (
+          <div key={item.id} className="overflow-hidden rounded-2xl border border-[#dce8e1] bg-[#f8fcfa]">
+            <div className="relative h-28">
+              <img src={item.image} alt="" className="h-full w-full object-cover" />
+              <span className="absolute left-2 top-2 rounded-full bg-white/95 px-2 py-1 text-[10px] font-black text-[#0f7a3b] shadow-sm">
+                {item.status}
+              </span>
+            </div>
+            <div className="p-3">
+              <p className="truncate text-xs font-black text-[#183c2a]">{item.foodName}</p>
+              <div className="mt-1 flex items-center justify-between text-[10px] font-bold text-[#7b9587]">
+                <span className="flex items-center gap-1 capitalize">
+                  <Utensils size={10} /> {item.mealType}
+                </span>
+                <span className="flex items-center gap-1">
+                  <Clock size={10} /> {formatSnapTime(item.capturedAt)}
+                </span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
+function inferMealType(date: Date) {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 11) return 'breakfast';
+  if (hour >= 11 && hour < 16) return 'lunch';
+  if (hour >= 19 || hour < 5) return 'dinner';
+  return 'snack';
+}
+
+const SNAP_GALLERY_KEY = 'nutrisnap-snap-gallery';
+
+function loadSnapGallery(): SnapGalleryItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SNAP_GALLERY_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSnapGallery(items: SnapGalleryItem[]) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(SNAP_GALLERY_KEY, JSON.stringify(items.slice(0, 8)));
+}
+
+function addSnapGalleryItem(item: Omit<SnapGalleryItem, 'id'>) {
+  const id = `snap-${Date.now()}`;
+  saveSnapGallery([{ ...item, id }, ...loadSnapGallery()]);
+  return id;
+}
+
+function updateSnapGalleryItem(id: string, patch: Partial<SnapGalleryItem>) {
+  if (!id) return;
+  saveSnapGallery(loadSnapGallery().map((item) => item.id === id ? { ...item, ...patch } : item));
+}
+
+function formatSnapTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Today';
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 function friendlyScanError(error: unknown, fallback: string) {
