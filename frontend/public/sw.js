@@ -1,11 +1,8 @@
-const CACHE_NAME = 'nutrisnap-v1'
+const CACHE_NAME = 'nutrisnap-v2'
 const STATIC_ASSETS = [
-  '/',
-  '/login/',
-  '/scan/',
-  '/log/',
-  '/profile/',
   '/manifest.json',
+  '/icon-192x192.png',
+  '/icon-512x512.png',
 ]
 
 // Install - cache static assets
@@ -32,10 +29,26 @@ self.addEventListener('activate', (event) => {
   self.clients.claim()
 })
 
-// Fetch - network first, cache fallback for API; cache first for static
+// Fetch - keep app shells and Next chunks fresh after each deployment.
 self.addEventListener('fetch', (event) => {
   const { request } = event
   const url = new URL(request.url)
+
+  if (request.method !== 'GET') {
+    return
+  }
+
+  if (url.pathname.startsWith('/_next/')) {
+    event.respondWith(fetch(request))
+    return
+  }
+
+  if (request.mode === 'navigate' || request.headers.get('accept')?.includes('text/html')) {
+    event.respondWith(
+      fetch(request).catch(() => caches.match(request).then((cached) => cached || caches.match('/')))
+    )
+    return
+  }
 
   // API requests - network first, cache fallback
   if (url.pathname.startsWith('/api/')) {
@@ -43,7 +56,7 @@ self.addEventListener('fetch', (event) => {
       fetch(request)
         .then((response) => {
           // Cache successful GET requests
-          if (request.method === 'GET' && response.ok) {
+          if (response.ok) {
             const clone = response.clone()
             caches.open(CACHE_NAME).then((cache) => {
               cache.put(request, clone)
