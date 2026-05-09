@@ -34,8 +34,10 @@ type NutritionResult = {
   fiber?: number;
   sodium?: number;
   rawText?: string;
+  ingredientsText?: string;
   source?: 'local' | 'usda' | 'openfoodfacts' | 'ocr' | 'manual' | 'estimate' | 'vision' | 'gemini';
   needsReview?: boolean;
+  message?: string;
 };
 
 type MealComponent = {
@@ -362,8 +364,12 @@ async function handleDetect(request: Request, env: Env): Promise<Response> {
       detectObjectsWithHuggingFace(body, imageType, env),
     ]);
 
+    let ocrText = '';
     const packagedFromObject = classifyPackagedFood(objects, '', food);
-    if (packagedFromObject) return jsonResponse(packagedFromObject);
+    if (packagedFromObject) {
+      ocrText = await extractTextWithHuggingFace(body, imageType, env);
+      return jsonResponse(classifyPackagedFood(objects, ocrText, food) || packagedFromObject);
+    }
 
     const objectFood = bestEdibleObject(objects);
     const mixedMeal = inferMixedMealFromObjects(objects, food, objectFood);
@@ -394,7 +400,7 @@ async function handleDetect(request: Request, env: Env): Promise<Response> {
 
     if (food && food.score >= 0.5) return jsonResponse({ ...food, kind: 'food' });
 
-    const ocrText = await extractTextWithHuggingFace(body, imageType, env);
+    ocrText = await extractTextWithHuggingFace(body, imageType, env);
     const packaged = classifyPackagedFood(objects, ocrText, food);
     if (packaged) return jsonResponse(packaged);
 
@@ -443,8 +449,12 @@ async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: strin
     detectObjectsWithHuggingFace(body, imageType, env),
   ]);
 
+  let ocrText = '';
   const packagedFromObject = classifyPackagedFood(objects, '', food);
-  if (packagedFromObject) return detectionToMealAnalysis(packagedFromObject);
+  if (packagedFromObject) {
+    ocrText = await extractTextWithHuggingFace(body, imageType, env);
+    return detectionToMealAnalysis(classifyPackagedFood(objects, ocrText, food) || packagedFromObject);
+  }
 
   const objectFood = bestEdibleObject(objects);
   const mixedMeal = inferMixedMealFromObjects(objects, food, objectFood);
@@ -458,7 +468,6 @@ async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: strin
   const objectWarning = classifyObjectWarning(objects, food);
   if (objectWarning) return detectionToMealAnalysis(objectWarning);
 
-  let ocrText = '';
   if (!food || food.score < 0.75 || objects?.some((item) => PACKAGED_OBJECTS.has(item.label))) {
     ocrText = await extractTextWithHuggingFace(body, imageType, env);
     const packaged = classifyPackagedFood(objects, ocrText, food);
@@ -517,6 +526,48 @@ async function analyzeMealWithGemini(body: ArrayBuffer, imageType: string, env: 
         }],
         generationConfig: {
           temperature: 0.15,
+          max_output_tokens: 1400,
+          response_mime_type: 'application/json',
+        },
+      }),
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    const text = extractGeminiOutputText(data);
+    if (!text) return null;
+
+    const parsed = parseJson(text);
+    if (!parsed) return null;
+    return normalizeMealAnalysis({ ...parsed, source: 'gemini' });
+  } catch {
+    return null;
+  }
+}
+
+async function analyzeNutritionLabelWithGemini(body: ArrayBuffer, imageType: string, productName: string, env: Env): Promise<MealAnalysisResult | null> {
+  if (!env.GEMINI_API_KEY) return null;
+
+  try {
+    const model = normalizeGeminiModelName(env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL);
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: nutritionLabelVisionPrompt(productName) },
+            {
+              inline_data: {
+                mime_type: imageType || 'image/jpeg',
+                data: arrayBufferToBase64(body),
+              },
+            },
+          ],
+        }],
+        generationConfig: {
+          temperature: 0.05,
           max_output_tokens: 1400,
           response_mime_type: 'application/json',
         },
@@ -596,6 +647,11 @@ async function handleNutritionLabel(request: Request, env: Env): Promise<Respons
   if (!(image instanceof File)) return jsonResponse({ message: 'No label image uploaded' }, 400);
 
   const body = await image.arrayBuffer();
+  const imageType = image.type || 'application/octet-stream';
+
+  const visionParsed = await analyzeNutritionLabelWithGemini(body, imageType, productName, env);
+  if (visionParsed) return jsonResponse(visionParsed);
+
   const rawText = await extractTextWithHuggingFace(body, image.type || 'application/octet-stream', env);
   const parsed = rawText ? parseNutritionLabel(rawText, productName) : null;
 
@@ -609,8 +665,12 @@ async function handleNutritionLabel(request: Request, env: Env): Promise<Respons
     fat: 0,
     serving: 'from package label',
     rawText: rawText || '',
+    ingredientsText: rawText ? extractIngredientsText(rawText) : undefined,
     source: rawText ? 'ocr' : 'manual',
     needsReview: true,
+    message: rawText
+      ? 'I could read some label text, but not enough calories and macros. Upload a clearer nutrition facts panel or enter the label values manually.'
+      : 'I could not read this label. Upload a clearer back label or enter the label values manually.',
   } satisfies NutritionResult);
 }
 
@@ -702,6 +762,7 @@ function normalizeMealAnalysis(input: Partial<MealAnalysisResult>): MealAnalysis
     fiber: input.fiber === undefined ? undefined : roundMacro(input.fiber),
     sodium: input.sodium === undefined ? undefined : Math.round(nonNegativeNumber(input.sodium)),
     rawText: input.rawText,
+    ingredientsText: input.ingredientsText,
     source: input.source || 'estimate',
     needsReview: Boolean(input.needsReview || kind !== 'food' || score < 0.65 || !calories),
     needsLabel: Boolean(input.needsLabel),
@@ -996,8 +1057,12 @@ function classifyPackagedFood(objects: Array<{ label: string; score: number }> |
 
   if (!topPackage && !textLooksPackaged) return null;
 
+  const label = rawText
+    ? inferProductNameFromLabel(rawText, food?.label || 'Packaged food')
+    : (food?.label || 'packaged food');
+
   return {
-    label: food?.label || 'packaged food',
+    label,
     objectLabel: topPackage?.label,
     score: Math.max(food?.score || 0, topPackage?.score || 0.6),
     kind: 'packaged_food',
@@ -1007,9 +1072,11 @@ function classifyPackagedFood(objects: Array<{ label: string; score: number }> |
   };
 }
 
-function parseNutritionLabel(rawText: string, productName: string): NutritionResult | null {
+function parseNutritionLabel(rawText: string, productName: string): MealAnalysisResult | null {
   const normalized = rawText.replace(/\s+/g, ' ').trim();
-  const calories = findNutrientValue(normalized, ['calories', 'kcal', 'energy']);
+  const detectedProductName = inferProductNameFromLabel(rawText, productName);
+  const ingredientsText = extractIngredientsText(rawText);
+  const calories = findCaloriesValue(normalized);
   const protein = findNutrientValue(normalized, ['protein']);
   const carbs = findNutrientValue(normalized, ['total carbohydrate', 'carbohydrate', 'carbs']);
   const fat = findNutrientValue(normalized, ['total fat', 'fat']);
@@ -1018,10 +1085,19 @@ function parseNutritionLabel(rawText: string, productName: string): NutritionRes
   const sodium = findNutrientValue(normalized, ['sodium', 'salt']);
   const serving = findServingText(normalized);
 
-  if ([calories, protein, carbs, fat].every((value) => value === null)) return null;
+  if ([calories, protein, carbs, fat].every((value) => value === null)) {
+    const ingredientEstimate = ingredientsText ? estimateNutritionFromIngredientPercentages(detectedProductName, ingredientsText, rawText) : null;
+    return ingredientEstimate;
+  }
 
-  return {
-    food_name: titleCase(productName),
+  const needsReview = [calories, protein, carbs, fat].some((value) => value === null);
+  const labelServing = serving || inferPerUnitServing(normalized) || 'from package label';
+  return normalizeMealAnalysis({
+    food_name: detectedProductName,
+    label: normalizeFoodName(detectedProductName),
+    score: needsReview ? 0.68 : 0.86,
+    confidence: needsReview ? 0.68 : 0.86,
+    kind: 'food',
     calories: Math.round(calories || 0),
     protein: protein || 0,
     carbs: carbs || 0,
@@ -1029,25 +1105,154 @@ function parseNutritionLabel(rawText: string, productName: string): NutritionRes
     sugar: sugar || undefined,
     fiber: fiber || undefined,
     sodium: sodium || undefined,
-    serving: serving || 'from package label',
+    serving: labelServing,
     rawText,
+    ingredientsText,
     source: 'ocr',
-    needsReview: [calories, protein, carbs, fat].some((value) => value === null),
-  };
+    needsReview,
+    message: needsReview
+      ? 'Read from the package label, but one or more macro values were missing. Review before logging.'
+      : 'Read directly from the package nutrition label.',
+    items: [{
+      name: 'Package Label Serving',
+      portion: labelServing,
+      calories: Math.round(calories || 0),
+      protein: protein || 0,
+      carbs: carbs || 0,
+      fat: fat || 0,
+      confidence: needsReview ? 0.68 : 0.86,
+    }],
+  });
+}
+
+function findCaloriesValue(text: string): number | null {
+  const patterns = [
+    /(?:calories|energy|energi)[^0-9]{0,48}(\d+(?:\.\d+)?)\s*kcal/i,
+    /(\d+(?:\.\d+)?)\s*kcal/i,
+    /(?:calories|energy|energi)[^0-9]{0,48}(\d+(?:\.\d+)?)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return Number(match[1]);
+  }
+
+  return null;
 }
 
 function findNutrientValue(text: string, labels: string[]): number | null {
   for (const label of labels) {
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = text.match(new RegExp(`${escaped}[^0-9]{0,24}(\\d+(?:\\.\\d+)?)`, 'i'));
+    const match = text.match(new RegExp(`${escaped}[^0-9]{0,40}(\\d+(?:\\.\\d+)?)\\s*(g|mg)?`, 'i'));
     if (match?.[1]) return Number(match[1]);
   }
   return null;
 }
 
 function findServingText(text: string): string | undefined {
-  const match = text.match(/serving size\s*[:\-]?\s*([a-z0-9 .()/-]{2,40})/i);
-  return match?.[1]?.trim();
+  const match = text.match(/serving size\s*[:\-]?\s*([a-z0-9 .()/-]{2,50})/i)
+    || text.match(/per serving\s*[:\-]?\s*([a-z0-9 .()/-]{2,50})/i);
+  return cleanLabelFragment(match?.[1]);
+}
+
+function inferPerUnitServing(text: string): string | undefined {
+  if (/\bper\s*100\s*g\b/i.test(text)) return 'per 100 g';
+  if (/\bper\s*100\s*ml\b/i.test(text)) return 'per 100 ml';
+  return undefined;
+}
+
+function inferProductNameFromLabel(rawText: string, fallbackName: string): string {
+  const fallback = String(fallbackName || '').trim();
+  if (fallback && !/^packaged food$/i.test(fallback)) return titleCase(fallback);
+
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => cleanLabelFragment(line))
+    .filter((line): line is string => Boolean(line));
+
+  const candidate = lines.find((line) => {
+    const lower = line.toLowerCase();
+    if (line.length < 3 || line.length > 60) return false;
+    if (!/[a-z]/i.test(line)) return false;
+    if ((line.match(/\d/g) || []).length > line.length / 3) return false;
+    return !/(nutrition|nutritional|ingredients?|serving|energy|calories|protein|carbohydrate|total fat|sodium|sugar|fiber|fibre|manufactured|marketed|packed|expiry|best before|net wt|barcode|fssai|license|customer care|allergen|contains)/i.test(lower);
+  });
+
+  return titleCase(candidate || fallback || 'Packaged Food');
+}
+
+function extractIngredientsText(rawText: string): string | undefined {
+  const compact = rawText.replace(/\s+/g, ' ').trim();
+  const match = compact.match(/ingredients?\s*[:\-]?\s*(.{8,800}?)(?=(?:nutrition|nutritional|allergen|contains|manufactured|marketed|packed|best before|expiry|storage|directions|serving|net wt|net weight|barcode|fssai|license|customer care)\b|$)/i);
+  return cleanLabelFragment(match?.[1]);
+}
+
+function cleanLabelFragment(value?: string): string | undefined {
+  const cleaned = String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s:;,.|/-]+|[\s:;,.|/-]+$/g, '')
+    .trim();
+
+  return cleaned || undefined;
+}
+
+function estimateNutritionFromIngredientPercentages(productName: string, ingredientsText: string, rawText: string): MealAnalysisResult | null {
+  const components = ingredientsText
+    .split(/[,;]+/)
+    .map((part) => ingredientPercentageToComponent(part))
+    .filter((item): item is MealComponent => Boolean(item));
+
+  if (!components.length) return null;
+
+  const totals = components.reduce((sum, item) => ({
+    calories: sum.calories + item.calories,
+    protein: sum.protein + item.protein,
+    carbs: sum.carbs + item.carbs,
+    fat: sum.fat + item.fat,
+  }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+
+  return normalizeMealAnalysis({
+    food_name: productName,
+    label: normalizeFoodName(productName),
+    score: 0.52,
+    confidence: 0.52,
+    kind: 'food',
+    calories: totals.calories,
+    protein: totals.protein,
+    carbs: totals.carbs,
+    fat: totals.fat,
+    serving: 'estimated per 100 g from ingredient percentages',
+    rawText,
+    ingredientsText,
+    source: 'estimate',
+    needsReview: true,
+    message: 'The nutrition facts table was not readable, so this is estimated from ingredient percentages on the label. Use the printed nutrition facts when available.',
+    items: components,
+  });
+}
+
+function ingredientPercentageToComponent(part: string): MealComponent | null {
+  const percentMatch = part.match(/(\d+(?:\.\d+)?)\s*%/);
+  if (!percentMatch?.[1]) return null;
+
+  const percent = Number(percentMatch[1]);
+  if (!Number.isFinite(percent) || percent <= 0) return null;
+
+  const name = cleanLabelFragment(part.replace(percentMatch[0], ''));
+  if (!name) return null;
+
+  const reference = findIngredientReference(normalizeIngredientSearchName(name));
+  if (!reference) return null;
+
+  const grams = Math.min(percent, 100);
+  return estimateIngredientFromReference({
+    raw: part,
+    displayName: name,
+    searchName: normalizeIngredientSearchName(name),
+    amount: grams,
+    unit: 'g',
+    portion: `${formatAmount(grams)} g per 100 g`,
+  }, reference, 0.55);
 }
 
 function articleFor(label: string) {
@@ -1514,6 +1719,19 @@ function mealVisionPrompt() {
     'List every major visible component with an estimated portion and macros. Include likely oil or dressing only when the food looks seasoned, glossy, sauced, or tossed.',
     'If the image is a packaged food front or unreadable package, return kind packaged_food and ask for the back nutrition/ingredients label. If the image truly has no usable food, return kind manual and ask for the food name and main ingredients.',
     'Return JSON only. Use this exact shape: {"kind":"food","food_name":"string","label":"string","score":0.0,"confidence":0.0,"calories":0,"protein":0,"carbs":0,"fat":0,"sugar":0,"fiber":0,"sodium":0,"serving":"string","needsReview":true,"needsLabel":false,"message":"string","items":[{"name":"string","portion":"string","calories":0,"protein":0,"carbs":0,"fat":0,"confidence":0.0}]}',
+    'All nutrition values must be non-negative numbers. score and confidence must be between 0 and 1.',
+  ].join('\n');
+}
+
+function nutritionLabelVisionPrompt(productName: string) {
+  return [
+    'You are NutriSnap AI reading the back label of packaged food for a calorie tracker.',
+    `The user supplied product name is "${productName || 'not provided'}". If the image shows a clearer product or food name, use the label image instead.`,
+    'Read nutrition facts, serving size, and ingredients from the package. Prefer the printed Nutrition Facts or nutrition table over estimation.',
+    'If values are per serving, return per serving. If only per 100 g/ml is printed, return per 100 g/ml and set serving accordingly. Do not multiply by the whole packet unless the label says the whole packet is one serving.',
+    'If an ingredient list is visible, copy it into ingredientsText. If nutrition numbers are missing but ingredient percentages are visible, estimate per 100 g and mark needsReview true.',
+    'If this is only a front package image with no usable nutrition panel, return kind packaged_food, needsLabel true, and ask for the back label.',
+    'Return JSON only. Use this exact shape: {"kind":"food","food_name":"string","label":"string","score":0.0,"confidence":0.0,"calories":0,"protein":0,"carbs":0,"fat":0,"sugar":0,"fiber":0,"sodium":0,"serving":"string","rawText":"string","ingredientsText":"string","needsReview":true,"needsLabel":false,"message":"string","items":[{"name":"Label serving","portion":"string","calories":0,"protein":0,"carbs":0,"fat":0,"confidence":0.0}]}',
     'All nutrition values must be non-negative numbers. score and confidence must be between 0 and 1.',
   ].join('\n');
 }

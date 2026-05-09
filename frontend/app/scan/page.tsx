@@ -26,6 +26,8 @@ type Nutrition = {
   sugar?: number;
   fiber?: number;
   sodium?: number;
+  rawText?: string;
+  ingredientsText?: string;
   source?: string;
   confidence?: number;
   needsReview?: boolean;
@@ -80,6 +82,8 @@ export default function ScanPage() {
       sugar: data?.sugar === undefined ? undefined : roundMacro(data.sugar),
       fiber: data?.fiber === undefined ? undefined : roundMacro(data.fiber),
       sodium: data?.sodium === undefined ? undefined : Math.round(toNumber(data.sodium)),
+      rawText: data?.rawText ? String(data.rawText) : undefined,
+      ingredientsText: data?.ingredientsText ? String(data.ingredientsText) : undefined,
       source: data?.source,
       confidence: toNumber(data?.confidence ?? data?.score),
       needsReview: Boolean(data?.needsReview),
@@ -89,7 +93,11 @@ export default function ScanPage() {
   }
 
   function setNutritionResult(data: any, fallbackName?: string) {
-    setNutrition(normalizeNutritionResult(data, fallbackName));
+    const normalized = normalizeNutritionResult(data, fallbackName);
+    setNutrition(normalized);
+    if (normalized.food_name && !/^food$|^packaged food$/i.test(normalized.food_name)) {
+      setCustomFood(normalized.food_name);
+    }
   }
 
   function detectionFromAnalysis(data: any): Detection {
@@ -433,12 +441,12 @@ export default function ScanPage() {
                       {detected.message || 'Upload the back side of the package with the ingredients or nutrition label.'}
                     </p>
                     <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                      <p className="text-xs text-gray-500 font-medium mb-2">Product name</p>
+                      <p className="text-xs text-gray-500 font-medium mb-2">Product name (optional)</p>
                       <input
                         type="text"
                         value={customFood}
                         onChange={(e) => setCustomFood(e.target.value)}
-                        placeholder={detected.label || 'Packaged food name'}
+                        placeholder={detected.label || 'AI will read this from the label if visible'}
                         className="input-field text-sm"
                       />
                     </div>
@@ -552,12 +560,12 @@ export default function ScanPage() {
               </p>
 
               <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                <p className="text-xs text-gray-500 font-medium mb-2">Product name</p>
+                <p className="text-xs text-gray-500 font-medium mb-2">Product name (optional)</p>
                 <input
                   type="text"
                   value={customFood}
                   onChange={(e) => setCustomFood(e.target.value)}
-                  placeholder={detected?.label || 'Packaged food name'}
+                  placeholder={detected?.label || 'AI will read this from the label if visible'}
                   className="input-field text-sm"
                 />
               </div>
@@ -684,6 +692,13 @@ export default function ScanPage() {
                   ) : 'Calculate Breakdown'}
                 </button>
               </div>
+
+              {nutrition.ingredientsText && (
+                <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                  <p className="text-xs text-gray-500 font-medium mb-2">Ingredients read from label</p>
+                  <p className="text-sm text-gray-700 leading-relaxed">{nutrition.ingredientsText}</p>
+                </div>
+              )}
 
               {nutrition.items && nutrition.items.length > 0 && (
                 <div className="bg-gray-50 rounded-xl p-4 mb-4">
