@@ -307,9 +307,6 @@ async function handleDetect(request: Request, env: Env): Promise<Response> {
       detectObjectsWithHuggingFace(body, imageType, env),
     ]);
 
-    const objectWarning = classifyObjectWarning(objects, food);
-    if (objectWarning) return jsonResponse(objectWarning);
-
     const packagedFromObject = classifyPackagedFood(objects, '', food);
     if (packagedFromObject) return jsonResponse(packagedFromObject);
 
@@ -324,6 +321,9 @@ async function handleDetect(request: Request, env: Env): Promise<Response> {
         message: objectFood.score < 0.7 ? 'Review this detected food before logging.' : '',
       } satisfies DetectionResult);
     }
+
+    const objectWarning = classifyObjectWarning(objects, food);
+    if (objectWarning) return jsonResponse(objectWarning);
 
     if (food && food.score >= 0.5) return jsonResponse({ ...food, kind: 'food' });
 
@@ -376,9 +376,6 @@ async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: strin
     detectObjectsWithHuggingFace(body, imageType, env),
   ]);
 
-  const objectWarning = classifyObjectWarning(objects, food);
-  if (objectWarning) return detectionToMealAnalysis(objectWarning);
-
   const packagedFromObject = classifyPackagedFood(objects, '', food);
   if (packagedFromObject) return detectionToMealAnalysis(packagedFromObject);
 
@@ -387,6 +384,9 @@ async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: strin
   if (shouldTrustObjectFood) {
     return nutritionAnalysisFromLabel(objectFood.label, objectFood.score, env, 'recognized from the photo');
   }
+
+  const objectWarning = classifyObjectWarning(objects, food);
+  if (objectWarning) return detectionToMealAnalysis(objectWarning);
 
   let ocrText = '';
   if (!food || food.score < 0.75 || objects?.some((item) => PACKAGED_OBJECTS.has(item.label))) {
@@ -770,21 +770,11 @@ async function callHuggingFace(model: string, body: ArrayBuffer, contentType: st
 function classifyObjectWarning(objects: Array<{ label: string; score: number }> | null, food: DetectionResult | null): DetectionResult | null {
   if (!objects?.length) return null;
 
-  const person = objects.find((item) => item.label === 'person' && item.score >= 0.45);
-  if (person) {
-    return {
-      label: 'human face or person',
-      objectLabel: person.label,
-      score: person.score,
-      kind: 'not_food',
-      needsReview: true,
-      message: 'This looks like a human face or person, not food. Please upload a meal or food package only.',
-    };
-  }
-
   const top = objects[0];
+  if (top?.label === 'person') return null;
+
   if (!top || top.score < 0.55 || FOOD_OBJECTS.has(top.label)) return null;
-  if ((food?.score || 0) >= 0.45) return null;
+  if (hasFoodContext(objects, food)) return null;
   if (!NON_FOOD_OBJECTS.has(top.label)) return null;
 
   return {
@@ -798,7 +788,12 @@ function classifyObjectWarning(objects: Array<{ label: string; score: number }> 
 }
 
 function bestEdibleObject(objects: Array<{ label: string; score: number }> | null): { label: string; score: number } | null {
-  return objects?.find((item) => EDIBLE_OBJECTS.has(item.label) && item.score >= 0.45) || null;
+  return objects?.find((item) => EDIBLE_OBJECTS.has(item.label) && item.score >= 0.35) || null;
+}
+
+function hasFoodContext(objects: Array<{ label: string; score: number }> | null, food: DetectionResult | null): boolean {
+  if ((food?.score || 0) >= 0.2) return true;
+  return Boolean(objects?.some((item) => FOOD_OBJECTS.has(item.label) && item.score >= 0.25));
 }
 
 function classifyPackagedFood(objects: Array<{ label: string; score: number }> | null, rawText: string, food: DetectionResult | null): DetectionResult | null {
