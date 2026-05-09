@@ -123,6 +123,25 @@ export const detectFood = async (input: string | File) => {
   return res.json()
 }
 
+export const analyzeMeal = async (file: File) => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
+  const formData = new FormData()
+  formData.append('image', file)
+
+  const res = await fetch(`${API_BASE}/api/analyze-meal`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Meal scan failed' }))
+    throw new Error(error.message || 'Meal scan failed')
+  }
+
+  return res.json()
+}
+
 export const analyzeNutritionLabel = async (file: File, productName?: string) => {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
   const formData = new FormData()
@@ -209,6 +228,7 @@ export const api = {
   register,
   uploadImage,
   detectFood,
+  analyzeMeal,
   analyzeNutritionLabel,
   getNutrition,
   logMeal,

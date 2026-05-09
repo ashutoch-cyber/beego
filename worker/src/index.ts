@@ -5,6 +5,8 @@ export interface Env {
   DB: D1Database;
   HUGGINGFACE_API_KEY?: string;
   HUGGINGFACE_API_TOKEN?: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_VISION_MODEL?: string;
   USDA_API_KEY?: string;
   JWT_SECRET: string;
 }
@@ -30,34 +32,64 @@ type NutritionResult = {
   fiber?: number;
   sodium?: number;
   rawText?: string;
-  source?: 'local' | 'usda' | 'openfoodfacts' | 'ocr' | 'manual' | 'estimate';
+  source?: 'local' | 'usda' | 'openfoodfacts' | 'ocr' | 'manual' | 'estimate' | 'vision';
   needsReview?: boolean;
+};
+
+type MealComponent = {
+  name: string;
+  portion: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  confidence?: number;
+};
+
+type MealAnalysisResult = NutritionResult & DetectionResult & {
+  confidence?: number;
+  items?: MealComponent[];
+};
+
+type LocalNutrition = NutritionResult & {
+  aliases?: string[];
 };
 
 const HUGGINGFACE_MODEL = 'nateraw/vit-base-food101';
 const OBJECT_DETECTION_MODEL = 'facebook/detr-resnet-50';
 const OCR_MODEL = 'microsoft/trocr-base-printed';
 
-const LOCAL_NUTRITION: NutritionResult[] = [
-  { food_name: 'rice', calories: 200, protein: 4, carbs: 45, fat: 0.5, serving: '1 cup cooked', source: 'local' },
-  { food_name: 'roti', calories: 80, protein: 3, carbs: 15, fat: 0.5, serving: '1 piece', source: 'local' },
-  { food_name: 'dal', calories: 150, protein: 9, carbs: 20, fat: 5, serving: '1 cup', source: 'local' },
-  { food_name: 'chicken curry', calories: 250, protein: 25, carbs: 8, fat: 12, serving: '1 cup', source: 'local' },
-  { food_name: 'paneer tikka', calories: 265, protein: 18, carbs: 6, fat: 20, serving: '100 g', source: 'local' },
-  { food_name: 'idli', calories: 120, protein: 4, carbs: 24, fat: 0.5, serving: '2 pieces', source: 'local' },
-  { food_name: 'dosa', calories: 180, protein: 4, carbs: 30, fat: 6, serving: '1 piece', source: 'local' },
+const LOCAL_NUTRITION: LocalNutrition[] = [
+  { food_name: 'rice', aliases: ['white rice', 'steamed rice', 'cooked rice'], calories: 200, protein: 4, carbs: 45, fat: 0.5, serving: '1 cup cooked', source: 'local' },
+  { food_name: 'fried rice', aliases: ['veg fried rice', 'vegetable fried rice'], calories: 330, protein: 9, carbs: 48, fat: 11, serving: '1 bowl', source: 'local' },
+  { food_name: 'roti', aliases: ['chapati', 'phulka'], calories: 80, protein: 3, carbs: 15, fat: 0.5, serving: '1 piece', source: 'local' },
+  { food_name: 'paratha', aliases: ['aloo paratha'], calories: 260, protein: 6, carbs: 36, fat: 10, serving: '1 piece', source: 'local' },
+  { food_name: 'dal', aliases: ['daal', 'lentils', 'lentil curry'], calories: 150, protein: 9, carbs: 20, fat: 5, serving: '1 cup', source: 'local' },
+  { food_name: 'chicken curry', aliases: ['chicken gravy', 'chicken masala'], calories: 250, protein: 25, carbs: 8, fat: 12, serving: '1 cup', source: 'local' },
+  { food_name: 'grilled chicken', aliases: ['chicken breast', 'roast chicken'], calories: 165, protein: 31, carbs: 0, fat: 4, serving: '100 g', source: 'local' },
+  { food_name: 'paneer tikka', aliases: ['paneer', 'paneer curry'], calories: 265, protein: 18, carbs: 6, fat: 20, serving: '100 g', source: 'local' },
+  { food_name: 'idli', aliases: ['idly'], calories: 120, protein: 4, carbs: 24, fat: 0.5, serving: '2 pieces', source: 'local' },
+  { food_name: 'dosa', aliases: ['masala dosa'], calories: 180, protein: 4, carbs: 30, fat: 6, serving: '1 piece', source: 'local' },
+  { food_name: 'poha', calories: 250, protein: 5, carbs: 42, fat: 7, serving: '1 bowl', source: 'local' },
+  { food_name: 'upma', calories: 260, protein: 6, carbs: 40, fat: 8, serving: '1 bowl', source: 'local' },
   { food_name: 'samosa', calories: 260, protein: 4, carbs: 30, fat: 14, serving: '1 piece', source: 'local' },
-  { food_name: 'biryani', calories: 350, protein: 12, carbs: 45, fat: 12, serving: '1 cup', source: 'local' },
-  { food_name: 'egg', calories: 70, protein: 6, carbs: 0.6, fat: 5, serving: '1 boiled egg', source: 'local' },
+  { food_name: 'biryani', aliases: ['chicken biryani', 'veg biryani'], calories: 350, protein: 12, carbs: 45, fat: 12, serving: '1 cup', source: 'local' },
+  { food_name: 'egg', aliases: ['boiled egg'], calories: 70, protein: 6, carbs: 0.6, fat: 5, serving: '1 boiled egg', source: 'local' },
+  { food_name: 'omelette', aliases: ['omelet'], calories: 190, protein: 13, carbs: 2, fat: 14, serving: '2 eggs', source: 'local' },
   { food_name: 'banana', calories: 105, protein: 1.3, carbs: 27, fat: 0.4, serving: '1 medium', source: 'local' },
   { food_name: 'milk', calories: 150, protein: 8, carbs: 12, fat: 8, serving: '1 cup', source: 'local' },
-  { food_name: 'oats', calories: 150, protein: 5, carbs: 27, fat: 2.5, serving: '1 cup cooked', source: 'local' },
+  { food_name: 'oats', aliases: ['oatmeal', 'porridge'], calories: 150, protein: 5, carbs: 27, fat: 2.5, serving: '1 cup cooked', source: 'local' },
   { food_name: 'apple', calories: 95, protein: 0.5, carbs: 25, fat: 0.3, serving: '1 medium', source: 'local' },
-  { food_name: 'yogurt', calories: 150, protein: 12, carbs: 17, fat: 4, serving: '1 cup', source: 'local' },
+  { food_name: 'yogurt', aliases: ['curd', 'dahi'], calories: 150, protein: 12, carbs: 17, fat: 4, serving: '1 cup', source: 'local' },
   { food_name: 'pizza', calories: 285, protein: 12, carbs: 36, fat: 10, serving: '1 slice', source: 'local' },
-  { food_name: 'burger', calories: 354, protein: 17, carbs: 29, fat: 18, serving: '1 burger', source: 'local' },
-  { food_name: 'salad', calories: 120, protein: 3, carbs: 12, fat: 7, serving: '1 bowl', source: 'local' },
-  { food_name: 'sandwich', calories: 300, protein: 14, carbs: 36, fat: 11, serving: '1 sandwich', source: 'local' },
+  { food_name: 'burger', aliases: ['hamburger', 'cheeseburger'], calories: 354, protein: 17, carbs: 29, fat: 18, serving: '1 burger', source: 'local' },
+  { food_name: 'salad', aliases: ['green salad', 'caesar salad'], calories: 120, protein: 3, carbs: 12, fat: 7, serving: '1 bowl', source: 'local' },
+  { food_name: 'sandwich', aliases: ['toast sandwich'], calories: 300, protein: 14, carbs: 36, fat: 11, serving: '1 sandwich', source: 'local' },
+  { food_name: 'pasta', aliases: ['spaghetti', 'macaroni'], calories: 320, protein: 11, carbs: 52, fat: 8, serving: '1 bowl', source: 'local' },
+  { food_name: 'noodles', aliases: ['chow mein', 'hakka noodles'], calories: 360, protein: 9, carbs: 52, fat: 13, serving: '1 bowl', source: 'local' },
+  { food_name: 'french fries', aliases: ['fries'], calories: 365, protein: 4, carbs: 48, fat: 17, serving: '1 medium serving', source: 'local' },
+  { food_name: 'cake', aliases: ['chocolate cake', 'cheesecake'], calories: 350, protein: 5, carbs: 45, fat: 18, serving: '1 slice', source: 'local' },
+  { food_name: 'ice cream', calories: 210, protein: 4, carbs: 24, fat: 11, serving: '1 cup', source: 'local' },
 ];
 
 const NON_FOOD_OBJECTS = new Set([
@@ -104,6 +136,7 @@ export default {
       if (!userId) return jsonResponse({ message: 'Invalid token' }, 401);
 
       if (path === '/api/upload' && request.method === 'POST') return await handleUpload(request, env, userId);
+      if (path === '/api/analyze-meal' && request.method === 'POST') return await handleAnalyzeMeal(request, env);
       if (path === '/api/detect' && request.method === 'POST') return await handleDetect(request, env);
       if (path === '/api/nutrition-label' && request.method === 'POST') return await handleNutritionLabel(request, env);
       if (path === '/api/nutrition' && request.method === 'POST') return await handleNutrition(request, env);
@@ -187,6 +220,20 @@ async function handleUpload(request: Request, env: Env, userId: number): Promise
   return jsonResponse({ message: 'Image received (not saved)', key: 'temporary' });
 }
 
+async function handleAnalyzeMeal(request: Request, env: Env): Promise<Response> {
+  try {
+    const image = await readImageFromRequest(request);
+    if (!image) return jsonResponse({ message: 'No image data' }, 400);
+
+    const openAiAnalysis = await analyzeMealWithOpenAI(image.body, image.imageType, env);
+    if (openAiAnalysis) return jsonResponse(openAiAnalysis);
+
+    return jsonResponse(await analyzeMealWithFallbackModels(image.body, image.imageType, env));
+  } catch {
+    return jsonResponse(manualMealAnalysisResponse('Meal analysis is unavailable. Enter the food and nutrition manually.'));
+  }
+}
+
 async function handleDetect(request: Request, env: Env): Promise<Response> {
   try {
     const contentType = request.headers.get('content-type') || '';
@@ -237,6 +284,128 @@ async function handleDetect(request: Request, env: Env): Promise<Response> {
   }
 }
 
+async function readImageFromRequest(request: Request): Promise<{ body: ArrayBuffer; imageType: string } | null> {
+  const contentType = request.headers.get('content-type') || '';
+  let body: ArrayBuffer | null = null;
+  let imageType = 'application/octet-stream';
+
+  if (contentType.includes('multipart/form-data')) {
+    const formData = await request.formData();
+    const image = formData.get('image');
+    if (!(image instanceof File)) return null;
+    imageType = image.type || imageType;
+    body = await image.arrayBuffer();
+  } else {
+    const { imageUrl } = await request.json().catch(() => ({})) as any;
+    if (imageUrl && typeof imageUrl === 'string') {
+      if (imageUrl.startsWith('data:')) {
+        const parsed = dataUrlToArrayBuffer(imageUrl);
+        if (!parsed) return null;
+        imageType = parsed.contentType;
+        body = parsed.body;
+      } else if (imageUrl.startsWith('http')) {
+        const res = await fetch(imageUrl);
+        if (!res.ok) return null;
+        imageType = res.headers.get('content-type') || imageType;
+        body = await res.arrayBuffer();
+      }
+    }
+  }
+
+  return body ? { body, imageType } : null;
+}
+
+async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: string, env: Env): Promise<MealAnalysisResult> {
+  const [food, objects] = await Promise.all([
+    detectWithHuggingFace(body, imageType, env),
+    detectObjectsWithHuggingFace(body, imageType, env),
+  ]);
+
+  const objectWarning = classifyObjectWarning(objects, food);
+  if (objectWarning) return detectionToMealAnalysis(objectWarning);
+
+  const packagedFromObject = classifyPackagedFood(objects, '', food);
+  if (packagedFromObject) return detectionToMealAnalysis(packagedFromObject);
+
+  let ocrText = '';
+  if (!food || food.score < 0.75 || objects?.some((item) => PACKAGED_OBJECTS.has(item.label))) {
+    ocrText = await extractTextWithHuggingFace(body, imageType, env);
+    const packaged = classifyPackagedFood(objects, ocrText, food);
+    if (packaged) return detectionToMealAnalysis(packaged);
+  }
+
+  if (!food?.label) return manualMealAnalysisResponse();
+
+  const nutrition = await resolveNutrition(food.label, env);
+  const needsReview = Boolean(nutrition.needsReview || food.score < 0.7 || nutrition.source === 'estimate');
+  return normalizeMealAnalysis({
+    ...nutrition,
+    label: food.label,
+    score: food.score,
+    confidence: food.score,
+    kind: 'food',
+    needsReview,
+    message: needsReview ? 'This is an estimate. Review the food name and totals before logging.' : '',
+    items: [{
+      name: nutrition.food_name,
+      portion: nutrition.serving || 'estimated serving',
+      calories: nutrition.calories,
+      protein: nutrition.protein,
+      carbs: nutrition.carbs,
+      fat: nutrition.fat,
+      confidence: food.score,
+    }],
+  });
+}
+
+async function analyzeMealWithOpenAI(body: ArrayBuffer, imageType: string, env: Env): Promise<MealAnalysisResult | null> {
+  if (!env.OPENAI_API_KEY) return null;
+
+  try {
+    const imageUrl = `data:${imageType || 'image/jpeg'};base64,${arrayBufferToBase64(body)}`;
+    const res = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: env.OPENAI_VISION_MODEL || 'gpt-5.4-mini',
+        input: [
+          {
+            role: 'system',
+            content: 'You estimate calories and macros from food photos for a calorie tracker. Return realistic estimates for the whole visible edible portion. Identify each visible food component and portion. If the image is not food, mark it not_food. If it is a packaged product without a readable nutrition facts panel, mark it packaged_food and ask for the back label. If a nutrition label is visible, read the label values. Be conservative and mark needsReview when uncertain. Never return negative numbers.',
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'Analyze this scan and return calories, protein, carbs, and fat for the full meal shown.' },
+              { type: 'input_image', image_url: imageUrl, detail: 'high' },
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'meal_nutrition_analysis',
+            strict: true,
+            schema: mealAnalysisJsonSchema(),
+          },
+        },
+        max_output_tokens: 1200,
+      }),
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    const text = extractOpenAIOutputText(data);
+    if (!text) return null;
+    return normalizeMealAnalysis({ ...parseJson(text), source: 'vision' });
+  } catch {
+    return null;
+  }
+}
+
 async function handleNutritionLabel(request: Request, env: Env): Promise<Response> {
   const contentType = request.headers.get('content-type') || '';
   if (!contentType.includes('multipart/form-data')) {
@@ -277,20 +446,97 @@ function manualDetectionResponse(message = 'AI detection is temporarily unavaila
   } satisfies DetectionResult);
 }
 
+function manualMealAnalysisResponse(message = 'AI meal analysis is temporarily unavailable. Enter the food name manually.'): MealAnalysisResult {
+  return {
+    food_name: '',
+    label: '',
+    score: 0,
+    confidence: 0,
+    kind: 'manual',
+    calories: 0,
+    protein: 0,
+    carbs: 0,
+    fat: 0,
+    serving: 'manual entry',
+    source: 'manual',
+    needsReview: true,
+    message,
+    items: [],
+  };
+}
+
+function detectionToMealAnalysis(detection: DetectionResult): MealAnalysisResult {
+  const foodName = detection.kind === 'not_food' ? detection.label : (detection.label || 'Packaged food');
+  return normalizeMealAnalysis({
+    food_name: foodName,
+    label: detection.label,
+    score: detection.score,
+    confidence: detection.score,
+    kind: detection.kind,
+    needsReview: true,
+    needsLabel: detection.needsLabel,
+    message: detection.message,
+    calories: 0,
+    protein: 0,
+    carbs: 0,
+    fat: 0,
+    serving: detection.kind === 'packaged_food' ? 'package label required' : 'not a meal',
+    source: detection.kind === 'packaged_food' ? 'manual' : 'estimate',
+    items: [],
+  });
+}
+
+function normalizeMealAnalysis(input: Partial<MealAnalysisResult>): MealAnalysisResult {
+  const kind = ['food', 'packaged_food', 'not_food', 'manual'].includes(String(input.kind))
+    ? input.kind
+    : 'food';
+  const label = String(input.label || input.food_name || '').trim();
+  const foodName = String(input.food_name || label || (kind === 'packaged_food' ? 'Packaged Food' : 'Food')).trim();
+  const calories = nonNegativeNumber(input.calories);
+  const protein = nonNegativeNumber(input.protein);
+  const carbs = nonNegativeNumber(input.carbs);
+  const fat = nonNegativeNumber(input.fat);
+  const score = clamp01(input.score ?? input.confidence ?? 0);
+  const items = Array.isArray(input.items)
+    ? input.items.map((item) => ({
+      name: titleCase(String(item?.name || 'Food')),
+      portion: String(item?.portion || 'estimated portion'),
+      calories: Math.round(nonNegativeNumber(item?.calories)),
+      protein: roundMacro(item?.protein),
+      carbs: roundMacro(item?.carbs),
+      fat: roundMacro(item?.fat),
+      confidence: clamp01(item?.confidence ?? score),
+    })).filter((item) => item.name && (item.calories || item.protein || item.carbs || item.fat))
+    : [];
+
+  return {
+    food_name: titleCase(foodName),
+    label: label.toLowerCase(),
+    score,
+    confidence: score,
+    kind,
+    calories: Math.round(calories),
+    protein: roundMacro(protein),
+    carbs: roundMacro(carbs),
+    fat: roundMacro(fat),
+    serving: String(input.serving || (kind === 'food' ? 'estimated scanned meal' : '')).trim(),
+    sugar: input.sugar === undefined ? undefined : roundMacro(input.sugar),
+    fiber: input.fiber === undefined ? undefined : roundMacro(input.fiber),
+    sodium: input.sodium === undefined ? undefined : Math.round(nonNegativeNumber(input.sodium)),
+    rawText: input.rawText,
+    source: input.source || 'estimate',
+    needsReview: Boolean(input.needsReview || kind !== 'food' || score < 0.65 || !calories),
+    needsLabel: Boolean(input.needsLabel),
+    message: String(input.message || '').trim(),
+    items,
+  };
+}
+
 async function handleNutrition(request: Request, env: Env): Promise<Response> {
   const { foodName } = await request.json() as any;
   if (!foodName || typeof foodName !== 'string') return jsonResponse({ message: 'Food name is required' }, 400);
 
-  const local = getLocalNutrition(foodName);
-  if (local) return jsonResponse(local);
-
-  const usda = await getUsdaNutrition(foodName, env.USDA_API_KEY);
-  if (usda) return jsonResponse(usda);
-
-  const openFoodFacts = await getOpenFoodFactsNutrition(foodName);
-  if (openFoodFacts) return jsonResponse(openFoodFacts);
-
-  return jsonResponse(estimateNutrition(foodName));
+  return jsonResponse(await resolveNutrition(foodName, env));
 }
 
 async function handleLog(request: Request, env: Env, userId: number): Promise<Response> {
@@ -549,6 +795,19 @@ function articleFor(label: string) {
   return /^[aeiou]/i.test(label) ? 'an' : 'a';
 }
 
+async function resolveNutrition(foodName: string, env: Env): Promise<NutritionResult> {
+  const local = getLocalNutrition(foodName);
+  if (local) return local;
+
+  const usda = await getUsdaNutrition(foodName, env.USDA_API_KEY);
+  if (usda) return usda;
+
+  const openFoodFacts = await getOpenFoodFactsNutrition(foodName);
+  if (openFoodFacts) return openFoodFacts;
+
+  return estimateNutrition(foodName);
+}
+
 async function getUsdaNutrition(foodName: string, apiKey?: string): Promise<NutritionResult | null> {
   if (!apiKey) return null;
 
@@ -559,13 +818,25 @@ async function getUsdaNutrition(foodName: string, apiKey?: string): Promise<Nutr
     const food = data.foods?.[0];
     if (!food) return null;
 
-    const nutrient = (name: string) => Number(food.foodNutrients?.find((n: any) => n.nutrientName?.includes(name))?.value) || 0;
+    const nutrient = (names: string[], unitHint?: string) => {
+      const nutrients = Array.isArray(food.foodNutrients) ? food.foodNutrients : [];
+      const match = nutrients.find((n: any) => {
+        const nutrientName = String(n.nutrientName || '').toLowerCase();
+        const unitName = String(n.unitName || '').toLowerCase();
+        return names.some((name) => nutrientName.includes(name)) && (!unitHint || unitName.includes(unitHint));
+      }) || nutrients.find((n: any) => {
+        const nutrientName = String(n.nutrientName || '').toLowerCase();
+        return names.some((name) => nutrientName.includes(name));
+      });
+      return Number(match?.value) || 0;
+    };
+
     return {
       food_name: food.description || foodName,
-      calories: Math.round(nutrient('Energy') || 200),
-      protein: nutrient('Protein'),
-      carbs: nutrient('Carbohydrate'),
-      fat: nutrient('Total lipid'),
+      calories: Math.round(nutrient(['energy'], 'kcal') || 200),
+      protein: nutrient(['protein']),
+      carbs: nutrient(['carbohydrate']),
+      fat: nutrient(['total lipid', 'fat']),
       serving: '100 g',
       source: 'usda',
     };
@@ -600,8 +871,50 @@ async function getOpenFoodFactsNutrition(foodName: string): Promise<NutritionRes
 
 function getLocalNutrition(foodName: string): NutritionResult | null {
   const normalized = normalizeFoodName(foodName);
-  const match = LOCAL_NUTRITION.find((item) => normalized.includes(normalizeFoodName(item.food_name)));
-  return match ? { ...match, food_name: titleCase(match.food_name) } : null;
+  const candidates = LOCAL_NUTRITION
+    .map((item) => {
+      const terms = [item.food_name, ...(item.aliases || [])].map(normalizeFoodName).filter(Boolean);
+      const matchedTerm = terms
+        .filter((term) => normalized === term || normalized.includes(term))
+        .sort((a, b) => b.length - a.length)[0];
+      return matchedTerm ? { item, matchedTerm } : null;
+    })
+    .filter(Boolean) as Array<{ item: LocalNutrition; matchedTerm: string }>;
+
+  const selected: Array<{ item: LocalNutrition; matchedTerm: string }> = [];
+  for (const candidate of candidates.sort((a, b) => b.matchedTerm.length - a.matchedTerm.length)) {
+    const alreadyCovered = selected.some((current) =>
+      current.matchedTerm.includes(candidate.matchedTerm) || candidate.matchedTerm.includes(current.matchedTerm)
+    );
+    if (!alreadyCovered) selected.push(candidate);
+  }
+
+  if (selected.length === 0) return null;
+  if (selected.length === 1) {
+    const { aliases, ...match } = selected[0].item;
+    return { ...match, food_name: titleCase(match.food_name) };
+  }
+
+  const totals = selected.reduce(
+    (sum, { item }) => ({
+      calories: sum.calories + item.calories,
+      protein: sum.protein + item.protein,
+      carbs: sum.carbs + item.carbs,
+      fat: sum.fat + item.fat,
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 },
+  );
+
+  return {
+    food_name: selected.map(({ item }) => titleCase(item.food_name)).join(' + '),
+    calories: Math.round(totals.calories),
+    protein: roundMacro(totals.protein),
+    carbs: roundMacro(totals.carbs),
+    fat: roundMacro(totals.fat),
+    serving: 'estimated combined meal',
+    source: 'local',
+    needsReview: true,
+  };
 }
 
 function estimateNutrition(foodName: string): NutritionResult {
@@ -631,4 +944,117 @@ function parseJson(text: string): any {
   } catch {
     return null;
   }
+}
+
+function nonNegativeNumber(value: any) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function roundMacro(value: any) {
+  return Math.round(nonNegativeNumber(value) * 10) / 10;
+}
+
+function clamp01(value: any) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(1, number));
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function dataUrlToArrayBuffer(dataUrl: string): { contentType: string; body: ArrayBuffer } | null {
+  const match = dataUrl.match(/^data:([^;,]+)?;base64,(.+)$/);
+  if (!match?.[2]) return null;
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return {
+    contentType: match[1] || 'application/octet-stream',
+    body: bytes.buffer,
+  };
+}
+
+function extractOpenAIOutputText(data: any): string {
+  if (typeof data?.output_text === 'string') return data.output_text;
+  if (!Array.isArray(data?.output)) return '';
+
+  for (const output of data.output) {
+    if (!Array.isArray(output?.content)) continue;
+    for (const content of output.content) {
+      if (typeof content?.text === 'string') return content.text;
+      if (typeof content?.output_text === 'string') return content.output_text;
+    }
+  }
+
+  return '';
+}
+
+function mealAnalysisJsonSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      kind: { type: 'string', enum: ['food', 'packaged_food', 'not_food', 'manual'] },
+      food_name: { type: 'string' },
+      label: { type: 'string' },
+      score: { type: 'number' },
+      confidence: { type: 'number' },
+      calories: { type: 'number' },
+      protein: { type: 'number' },
+      carbs: { type: 'number' },
+      fat: { type: 'number' },
+      sugar: { type: 'number' },
+      fiber: { type: 'number' },
+      sodium: { type: 'number' },
+      serving: { type: 'string' },
+      needsReview: { type: 'boolean' },
+      needsLabel: { type: 'boolean' },
+      message: { type: 'string' },
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string' },
+            portion: { type: 'string' },
+            calories: { type: 'number' },
+            protein: { type: 'number' },
+            carbs: { type: 'number' },
+            fat: { type: 'number' },
+            confidence: { type: 'number' },
+          },
+          required: ['name', 'portion', 'calories', 'protein', 'carbs', 'fat', 'confidence'],
+        },
+      },
+    },
+    required: [
+      'kind',
+      'food_name',
+      'label',
+      'score',
+      'confidence',
+      'calories',
+      'protein',
+      'carbs',
+      'fat',
+      'sugar',
+      'fiber',
+      'sodium',
+      'serving',
+      'needsReview',
+      'needsLabel',
+      'message',
+      'items',
+    ],
+  };
 }

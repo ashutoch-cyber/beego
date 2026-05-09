@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { Camera, Upload, X, Check, AlertTriangle, Sparkles, Loader2, Package, FileText } from 'lucide-react';
 import BottomNav from '@/components/BottomNav';
-import { analyzeNutritionLabel, detectFood, getNutrition, logMeal } from '@/lib/api';
+import { analyzeMeal, analyzeNutritionLabel, detectFood, getNutrition, logMeal } from '@/lib/api';
 import { cacheMeal } from '@/lib/offline';
 
 type Detection = {
@@ -16,12 +16,37 @@ type Detection = {
   objectLabel?: string;
 };
 
+type Nutrition = {
+  food_name?: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  serving?: string;
+  sugar?: number;
+  fiber?: number;
+  sodium?: number;
+  source?: string;
+  confidence?: number;
+  needsReview?: boolean;
+  message?: string;
+  items?: Array<{
+    name: string;
+    portion: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    confidence?: number;
+  }>;
+};
+
 export default function ScanPage() {
   const [image, setImage] = useState<string | null>(null);
   const [imageKey, setImageKey] = useState<string>('');
   const [labelImage, setLabelImage] = useState<string | null>(null);
   const [detected, setDetected] = useState<Detection | null>(null);
-  const [nutrition, setNutrition] = useState<any>(null);
+  const [nutrition, setNutrition] = useState<Nutrition | null>(null);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'upload' | 'detect' | 'confirm' | 'label' | 'nutrition' | 'done'>('upload');
   const [customFood, setCustomFood] = useState('');
@@ -30,6 +55,53 @@ export default function ScanPage() {
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const labelInputRef = useRef<HTMLInputElement>(null);
+
+  function normalizeNutritionResult(data: any, fallbackName = 'Food'): Nutrition {
+    const items = Array.isArray(data?.items)
+      ? data.items.map((item: any) => ({
+        name: String(item?.name || 'Food'),
+        portion: String(item?.portion || 'estimated portion'),
+        calories: Math.round(toNumber(item?.calories)),
+        protein: roundMacro(item?.protein),
+        carbs: roundMacro(item?.carbs),
+        fat: roundMacro(item?.fat),
+        confidence: toNumber(item?.confidence),
+      })).filter((item: NonNullable<Nutrition['items']>[number]) => item.name && (item.calories || item.protein || item.carbs || item.fat))
+      : [];
+
+    return {
+      food_name: String(data?.food_name || fallbackName || 'Food'),
+      calories: Math.round(toNumber(data?.calories)),
+      protein: roundMacro(data?.protein),
+      carbs: roundMacro(data?.carbs),
+      fat: roundMacro(data?.fat),
+      serving: data?.serving ? String(data.serving) : undefined,
+      sugar: data?.sugar === undefined ? undefined : roundMacro(data.sugar),
+      fiber: data?.fiber === undefined ? undefined : roundMacro(data.fiber),
+      sodium: data?.sodium === undefined ? undefined : Math.round(toNumber(data.sodium)),
+      source: data?.source,
+      confidence: toNumber(data?.confidence ?? data?.score),
+      needsReview: Boolean(data?.needsReview),
+      message: data?.message,
+      items,
+    };
+  }
+
+  function setNutritionResult(data: any, fallbackName?: string) {
+    setNutrition(normalizeNutritionResult(data, fallbackName));
+  }
+
+  function detectionFromAnalysis(data: any): Detection {
+    return {
+      label: String(data?.label || data?.food_name || '').trim(),
+      score: toNumber(data?.score ?? data?.confidence),
+      kind: data?.kind || 'food',
+      needsReview: Boolean(data?.needsReview),
+      needsLabel: Boolean(data?.needsLabel),
+      message: data?.message,
+      objectLabel: data?.objectLabel,
+    };
+  }
 
   const handleFile = useCallback(async (file: File) => {
     setError('');
@@ -40,19 +112,38 @@ export default function ScanPage() {
       reader.readAsDataURL(file);
 
       setStep('detect');
-      const detectRes = await detectFood(file);
-      setDetected(detectRes);
-      setStep('confirm');
+      const scanRes = await analyzeMeal(file);
+      const nextDetection = detectionFromAnalysis(scanRes);
+      setDetected(nextDetection);
+
+      if (nextDetection.kind === 'not_food' || nextDetection.kind === 'packaged_food' || nextDetection.needsLabel || nextDetection.kind === 'manual') {
+        setStep('confirm');
+        return;
+      }
+
+      const foodName = scanRes?.food_name || nextDetection.label || 'Food';
+      setCustomFood(foodName);
+      setNutritionResult(scanRes, foodName);
+      if (scanRes?.needsReview) {
+        setError(scanRes.message || 'Review the scanned totals before logging.');
+      }
+      setStep('nutrition');
     } catch (err: any) {
-      setDetected({
-        label: '',
-        score: 0,
-        kind: 'manual',
-        needsReview: true,
-        message: 'AI detection is unavailable. Enter the food name manually.',
-      });
-      setError(err.message || 'AI detection is unavailable. Enter the food name manually.');
-      setStep('confirm');
+      try {
+        const detectRes = await detectFood(file);
+        setDetected(detectRes);
+        setStep('confirm');
+      } catch {
+        setDetected({
+          label: '',
+          score: 0,
+          kind: 'manual',
+          needsReview: true,
+          message: 'AI detection is unavailable. Enter the food name manually.',
+        });
+        setError(err.message || 'AI detection is unavailable. Enter the food name manually.');
+        setStep('confirm');
+      }
     } finally {
       setLoading(false);
     }
@@ -63,17 +154,20 @@ export default function ScanPage() {
     setError('');
     try {
       const nutri = await getNutrition(foodName);
-      setNutrition(nutri);
+      setNutritionResult(nutri, foodName);
       setStep('nutrition');
     } catch (err: any) {
       setError('Failed to fetch nutrition. Using estimates.');
-      setNutrition({
+      setNutritionResult({
+        food_name: foodName,
         calories: 250,
         protein: 10,
         carbs: 30,
         fat: 8,
         serving: '1 serving',
-      });
+        source: 'estimate',
+        needsReview: true,
+      }, foodName);
       setStep('nutrition');
     } finally {
       setLoading(false);
@@ -90,7 +184,7 @@ export default function ScanPage() {
 
       const productName = customFood.trim() || detected?.label || 'Packaged food';
       const nutri = await analyzeNutritionLabel(file, productName);
-      setNutrition(nutri);
+      setNutritionResult(nutri, productName);
       if (nutri?.needsReview) {
         setError('Some values could not be read clearly. Review the nutrition facts before logging.');
       }
@@ -109,7 +203,7 @@ export default function ScanPage() {
       return;
     }
 
-    setNutrition({
+    setNutritionResult({
       food_name: customFood.trim() || detected?.label || 'Packaged food',
       calories,
       protein: Number(manualNutrition.protein) || 0,
@@ -123,6 +217,19 @@ export default function ScanPage() {
     });
     setError('');
     setStep('nutrition');
+  }
+
+  function updateNutritionField(field: keyof Pick<Nutrition, 'calories' | 'protein' | 'carbs' | 'fat'>, value: string) {
+    setNutrition((current) => current ? {
+      ...current,
+      [field]: field === 'calories' ? Math.round(toNumber(value)) : roundMacro(value),
+      needsReview: true,
+    } : current);
+  }
+
+  function updateNutritionFoodName(value: string) {
+    setNutrition((current) => current ? { ...current, food_name: value, needsReview: true } : current);
+    setCustomFood(value);
   }
 
   function startPackagedFlow() {
@@ -139,9 +246,12 @@ export default function ScanPage() {
   }
 
   async function handleLogMeal() {
+    if (!nutrition) return;
+
     setLoading(true);
     try {
-      const foodName = customFood.trim() || detected?.label || nutrition?.food_name || 'Food';
+      const foodName = nutrition.food_name || customFood.trim() || detected?.label || 'Food';
+      const imageUrl = image && image.length < 180000 ? image : undefined;
       const meal = {
         food_name: foodName,
         calories: nutrition.calories,
@@ -149,21 +259,22 @@ export default function ScanPage() {
         carbs: nutrition.carbs,
         fat: nutrition.fat,
         meal_type: mealType,
-        image_url: image || undefined,
+        image_url: imageUrl,
         date: new Date().toISOString().split('T')[0],
       };
       await logMeal(meal);
       await cacheMeal(meal);
       setStep('done');
     } catch (err: any) {
+      const imageUrl = image && image.length < 180000 ? image : undefined;
       await cacheMeal({
-        food_name: customFood.trim() || detected?.label || nutrition?.food_name || 'Food',
+        food_name: nutrition.food_name || customFood.trim() || detected?.label || 'Food',
         calories: nutrition.calories,
         protein: nutrition.protein,
         carbs: nutrition.carbs,
         fat: nutrition.fat,
         meal_type: mealType,
-        image_url: image || undefined,
+        image_url: imageUrl,
         date: new Date().toISOString().split('T')[0],
       });
       setStep('done');
@@ -503,24 +614,112 @@ export default function ScanPage() {
               <h3 className="font-bold text-gray-900 text-lg mb-4">Nutrition Facts</h3>
               {nutrition.needsReview && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3 mb-4">
-                  Some label values may need review.
+                  {nutrition.message || 'Review the scanned totals before logging.'}
                 </p>
               )}
+
+              <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                <label className="text-xs text-gray-500 font-medium mb-2 block">Food name</label>
+                <input
+                  type="text"
+                  value={nutrition.food_name || customFood}
+                  onChange={(e) => updateNutritionFoodName(e.target.value)}
+                  className="input-field text-sm bg-white"
+                />
+                {(nutrition.serving || nutrition.source || nutrition.confidence) && (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {nutrition.serving && (
+                      <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-xs text-gray-500">
+                        {nutrition.serving}
+                      </span>
+                    )}
+                    {nutrition.source && (
+                      <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-xs text-gray-500 capitalize">
+                        {nutrition.source}
+                      </span>
+                    )}
+                    {Boolean(nutrition.confidence) && (
+                      <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-xs text-gray-500">
+                        {Math.round((nutrition.confidence || 0) * 100)}% confidence
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {nutrition.items && nutrition.items.length > 0 && (
+                <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                  <p className="text-xs text-gray-500 font-medium mb-3">Detected items</p>
+                  <div className="space-y-2">
+                    {nutrition.items.map((item, index) => (
+                      <div key={`${item.name}-${index}`} className="flex items-center justify-between gap-3 text-sm">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-gray-800 truncate">{item.name}</p>
+                          <p className="text-xs text-gray-400 truncate">{item.portion}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-bold text-gray-900">{Math.round(item.calories)} kcal</p>
+                          <p className="text-[10px] text-gray-400">
+                            P:{Math.round(item.protein)}g C:{Math.round(item.carbs)}g F:{Math.round(item.fat)}g
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <div className="bg-orange-50 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-orange-600">{Math.round(nutrition.calories)}</p>
+                  <input
+                    type="number"
+                    min="0"
+                    value={Math.round(nutrition.calories)}
+                    onChange={(e) => updateNutritionField('calories', e.target.value)}
+                    className="w-full bg-transparent text-center text-2xl font-bold text-orange-600 outline-none"
+                  />
                   <p className="text-xs text-orange-400 font-medium mt-1">Calories (kcal)</p>
                 </div>
                 <div className="bg-blue-50 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-blue-600">{Math.round(nutrition.protein)}g</p>
+                  <div className="flex items-baseline justify-center">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={nutrition.protein}
+                      onChange={(e) => updateNutritionField('protein', e.target.value)}
+                      className="w-20 bg-transparent text-center text-2xl font-bold text-blue-600 outline-none"
+                    />
+                    <span className="text-blue-600 font-bold">g</span>
+                  </div>
                   <p className="text-xs text-blue-400 font-medium mt-1">Protein</p>
                 </div>
                 <div className="bg-yellow-50 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-yellow-600">{Math.round(nutrition.carbs)}g</p>
+                  <div className="flex items-baseline justify-center">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={nutrition.carbs}
+                      onChange={(e) => updateNutritionField('carbs', e.target.value)}
+                      className="w-20 bg-transparent text-center text-2xl font-bold text-yellow-600 outline-none"
+                    />
+                    <span className="text-yellow-600 font-bold">g</span>
+                  </div>
                   <p className="text-xs text-yellow-400 font-medium mt-1">Carbs</p>
                 </div>
                 <div className="bg-red-50 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-red-600">{Math.round(nutrition.fat)}g</p>
+                  <div className="flex items-baseline justify-center">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={nutrition.fat}
+                      onChange={(e) => updateNutritionField('fat', e.target.value)}
+                      className="w-20 bg-transparent text-center text-2xl font-bold text-red-600 outline-none"
+                    />
+                    <span className="text-red-600 font-bold">g</span>
+                  </div>
                   <p className="text-xs text-red-400 font-medium mt-1">Fat</p>
                 </div>
               </div>
@@ -606,4 +805,13 @@ export default function ScanPage() {
       <BottomNav />
     </div>
   );
+}
+
+function toNumber(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function roundMacro(value: unknown) {
+  return Math.round(toNumber(value) * 10) / 10;
 }

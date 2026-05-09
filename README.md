@@ -120,6 +120,10 @@ npx wrangler secret put HUGGINGFACE_API_KEY
 npx wrangler secret put USDA_API_KEY
 # Enter your USDA API key
 
+# Optional: enables direct meal-photo calorie and macro estimation.
+npx wrangler secret put OPENAI_API_KEY
+# Enter your OpenAI API key
+
 npx wrangler secret put JWT_SECRET
 # Enter a random 32+ character string
 ```
