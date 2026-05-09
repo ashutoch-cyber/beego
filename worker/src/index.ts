@@ -57,6 +57,27 @@ type LocalNutrition = NutritionResult & {
   aliases?: string[];
 };
 
+type IngredientReference = {
+  food_name: string;
+  aliases?: string[];
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  servingGrams?: number;
+  pieceGrams?: number;
+  density?: number;
+};
+
+type ParsedIngredient = {
+  raw: string;
+  displayName: string;
+  searchName: string;
+  amount?: number;
+  unit?: string;
+  portion: string;
+};
+
 const HUGGINGFACE_MODEL = 'nateraw/vit-base-food101';
 const OBJECT_DETECTION_MODEL = 'facebook/detr-resnet-50';
 const OCR_MODEL = 'microsoft/trocr-base-printed';
@@ -106,6 +127,25 @@ const LOCAL_NUTRITION: LocalNutrition[] = [
   { food_name: 'french fries', aliases: ['fries'], calories: 365, protein: 4, carbs: 48, fat: 17, serving: '1 medium serving', source: 'local' },
   { food_name: 'cake', aliases: ['chocolate cake', 'cheesecake'], calories: 350, protein: 5, carbs: 45, fat: 18, serving: '1 slice', source: 'local' },
   { food_name: 'ice cream', calories: 210, protein: 4, carbs: 24, fat: 11, serving: '1 cup', source: 'local' },
+];
+
+const INGREDIENT_NUTRITION: IngredientReference[] = [
+  { food_name: 'chicken', aliases: ['chicken breast', 'chicken thigh', 'boneless chicken'], calories: 165, protein: 25.8, carbs: 0, fat: 6.5, servingGrams: 100 },
+  { food_name: 'oil', aliases: ['fried oil', 'sunflower oil', 'vegetable oil', 'cooking oil'], calories: 884, protein: 0, carbs: 0, fat: 100, servingGrams: 100, density: 1 },
+  { food_name: 'cornflour', aliases: ['corn flour', 'corn starch', 'cornstarch'], calories: 381, protein: 0.3, carbs: 91, fat: 0.1, servingGrams: 100 },
+  { food_name: 'green chilli', aliases: ['green chillies', 'green chilies', 'chilli', 'chilies', 'chili pepper'], calories: 40, protein: 2, carbs: 9, fat: 0.2, servingGrams: 100, pieceGrams: 2 },
+  { food_name: 'paneer', aliases: ['cottage cheese', 'paneer cubes'], calories: 265, protein: 18, carbs: 6, fat: 20, servingGrams: 100 },
+  { food_name: 'kidney beans', aliases: ['rajma', 'red beans'], calories: 127, protein: 8.7, carbs: 22.8, fat: 0.5, servingGrams: 100 },
+  { food_name: 'chickpeas', aliases: ['chana', 'garbanzo beans'], calories: 164, protein: 8.9, carbs: 27.4, fat: 2.6, servingGrams: 100 },
+  { food_name: 'mixed seeds', aliases: ['pumpkin seeds', 'sunflower seeds', 'sesame seeds'], calories: 570, protein: 20, carbs: 20, fat: 49, servingGrams: 100 },
+  { food_name: 'cabbage', aliases: ['red cabbage', 'purple cabbage'], calories: 31, protein: 1.4, carbs: 7.4, fat: 0.2, servingGrams: 100 },
+  { food_name: 'cucumber', calories: 15, protein: 0.7, carbs: 3.6, fat: 0.1, servingGrams: 100 },
+  { food_name: 'carrot', aliases: ['carrots'], calories: 41, protein: 0.9, carbs: 10, fat: 0.2, servingGrams: 100, pieceGrams: 61 },
+  { food_name: 'pomegranate', aliases: ['pomegranate seeds', 'pomegranate arils'], calories: 83, protein: 1.7, carbs: 19, fat: 1.2, servingGrams: 100 },
+  { food_name: 'rice', aliases: ['cooked rice', 'white rice'], calories: 130, protein: 2.7, carbs: 28, fat: 0.3, servingGrams: 100 },
+  { food_name: 'apple', aliases: ['apples'], calories: 52, protein: 0.3, carbs: 14, fat: 0.2, servingGrams: 100, pieceGrams: 182 },
+  { food_name: 'egg', aliases: ['boiled egg', 'eggs'], calories: 155, protein: 13, carbs: 1.1, fat: 11, servingGrams: 100, pieceGrams: 50 },
+  { food_name: 'bread', aliases: ['bread slice', 'toast'], calories: 265, protein: 9, carbs: 49, fat: 3.2, servingGrams: 100, pieceGrams: 25 },
 ];
 
 const NON_FOOD_OBJECTS = new Set([
@@ -1027,9 +1067,14 @@ async function resolveNutrition(foodName: string, env: Env): Promise<NutritionRe
   return estimateNutrition(foodName);
 }
 
-async function resolveNutritionWithIngredients(foodName: string, ingredients: unknown, env: Env): Promise<NutritionResult> {
+async function resolveNutritionWithIngredients(foodName: string, ingredients: unknown, env: Env): Promise<NutritionResult | MealAnalysisResult> {
   const cleanFoodName = String(foodName || '').trim();
   const cleanIngredients = typeof ingredients === 'string' ? ingredients.trim() : '';
+
+  if (cleanIngredients) {
+    const ingredientAnalysis = await resolveIngredientBreakdown(cleanFoodName || 'Custom meal', cleanIngredients, env);
+    if (ingredientAnalysis) return ingredientAnalysis;
+  }
 
   const direct = await resolveNutrition(cleanFoodName, env);
   if (!cleanIngredients || direct.source !== 'estimate') return direct;
@@ -1049,6 +1094,280 @@ async function resolveNutritionWithIngredients(foodName: string, ingredients: un
     serving: 'estimated from food name and ingredients',
     needsReview: true,
   };
+}
+
+async function resolveIngredientBreakdown(foodName: string, ingredients: string, env: Env): Promise<MealAnalysisResult | null> {
+  const parsed = parseIngredientList(ingredients).slice(0, 16);
+  if (!parsed.length) return null;
+
+  const estimates = await Promise.all(parsed.map((ingredient) => estimateIngredient(ingredient, env)));
+  const items = estimates.filter((item): item is MealComponent => Boolean(item));
+  if (!items.length) return null;
+
+  const totals = items.reduce((sum, item) => ({
+    calories: sum.calories + item.calories,
+    protein: sum.protein + item.protein,
+    carbs: sum.carbs + item.carbs,
+    fat: sum.fat + item.fat,
+    confidence: sum.confidence + (item.confidence || 0),
+  }), { calories: 0, protein: 0, carbs: 0, fat: 0, confidence: 0 });
+
+  const confidence = items.length ? totals.confidence / items.length : 0.65;
+
+  return normalizeMealAnalysis({
+    food_name: foodName,
+    label: normalizeFoodName(foodName),
+    score: confidence,
+    confidence,
+    kind: 'food',
+    calories: totals.calories,
+    protein: totals.protein,
+    carbs: totals.carbs,
+    fat: totals.fat,
+    serving: 'calculated from provided ingredients',
+    source: 'manual',
+    needsReview: true,
+    message: 'Calculated from the ingredients and quantities you provided. Review oil amounts, raw/cooked weights, and portion sizes before logging.',
+    items,
+  });
+}
+
+async function estimateIngredient(ingredient: ParsedIngredient, env: Env): Promise<MealComponent | null> {
+  const reference = findIngredientReference(ingredient.searchName);
+  if (reference) return estimateIngredientFromReference(ingredient, reference, 0.9);
+
+  const nutrition = await getUsdaNutrition(ingredient.searchName, env.USDA_API_KEY)
+    || getLocalNutrition(ingredient.searchName)
+    || estimateNutrition(ingredient.searchName);
+  if (!nutrition) return null;
+
+  const servingGrams = parseServingGrams(nutrition.serving) || (nutrition.source === 'usda' ? 100 : undefined);
+  const grams = gramsForIngredient(ingredient, undefined) || servingGrams;
+  const scale = grams && servingGrams ? grams / servingGrams : 1;
+
+  return {
+    name: titleCase(ingredient.displayName || nutrition.food_name),
+    portion: ingredient.portion || nutrition.serving || 'estimated serving',
+    calories: Math.round(nonNegativeNumber(nutrition.calories) * scale),
+    protein: roundMacro(nonNegativeNumber(nutrition.protein) * scale),
+    carbs: roundMacro(nonNegativeNumber(nutrition.carbs) * scale),
+    fat: roundMacro(nonNegativeNumber(nutrition.fat) * scale),
+    confidence: nutrition.source === 'estimate' ? 0.45 : 0.72,
+  };
+}
+
+function estimateIngredientFromReference(ingredient: ParsedIngredient, reference: IngredientReference, confidence: number): MealComponent {
+  const grams = gramsForIngredient(ingredient, reference) || reference.servingGrams || 100;
+  const scale = grams / 100;
+
+  return {
+    name: titleCase(ingredient.displayName || reference.food_name),
+    portion: ingredient.portion || `${Math.round(grams)} g`,
+    calories: Math.round(reference.calories * scale),
+    protein: roundMacro(reference.protein * scale),
+    carbs: roundMacro(reference.carbs * scale),
+    fat: roundMacro(reference.fat * scale),
+    confidence,
+  };
+}
+
+function parseIngredientList(ingredients: string): ParsedIngredient[] {
+  return ingredients
+    .replace(/\r/g, '\n')
+    .replace(/[|]/g, '\n')
+    .split(/[\n;,]+/)
+    .map((part) => parseIngredient(part))
+    .filter((ingredient): ingredient is ParsedIngredient => Boolean(ingredient?.displayName));
+}
+
+function parseIngredient(raw: string): ParsedIngredient | null {
+  const cleaned = raw.replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+
+  const amountMatch = cleaned.match(/(?:^|\s)(\d+(?:\.\d+)?|\d+\/\d+)\s*(kg|kilogram|kilograms|g|gram|grams|mg|milligram|milligrams|ml|milliliter|milliliters|millilitre|millilitres|l|liter|liters|litre|litres|tsp|teaspoon|teaspoons|tbsp|tablespoon|tablespoons|cup|cups|pc|pcs|piece|pieces|slice|slices|medium|small|large)\b/i);
+  let amount: number | undefined;
+  let unit: string | undefined;
+  let displayName = cleaned;
+
+  if (amountMatch?.[1] && amountMatch[2]) {
+    amount = parseAmount(amountMatch[1]);
+    unit = normalizeUnit(amountMatch[2]);
+    displayName = `${cleaned.slice(0, amountMatch.index)} ${cleaned.slice((amountMatch.index || 0) + amountMatch[0].length)}`;
+  } else {
+    const leadingCount = cleaned.match(/^(\d+(?:\.\d+)?)\s+(.+)$/);
+    if (leadingCount?.[1] && leadingCount[2]) {
+      amount = Number(leadingCount[1]);
+      unit = 'piece';
+      displayName = leadingCount[2];
+    }
+  }
+
+  displayName = displayName
+    .replace(/\b(of|about|approx|approximately|around)\b/gi, ' ')
+    .replace(/[-:]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!displayName) return null;
+
+  return {
+    raw,
+    displayName,
+    searchName: normalizeIngredientSearchName(displayName),
+    amount,
+    unit,
+    portion: amount && unit ? `${formatAmount(amount)} ${displayUnit(unit)}` : 'estimated serving',
+  };
+}
+
+function normalizeIngredientSearchName(value: string) {
+  const normalized = normalizeFoodName(value)
+    .replace(/\b(shallow fried|deep fried|fried|cooked|boiled|raw|fresh|chopped|diced|sliced|grated|roasted|grilled)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (/\boil\b/.test(normalized)) return 'oil';
+  if (/corn\s*flour|cornflour|corn\s*starch|cornstarch/.test(normalized)) return 'cornflour';
+  if (/chill|chili|chile/.test(normalized)) return 'green chilli';
+  if (/paneer|cottage cheese/.test(normalized)) return 'paneer';
+  if (/kidney|rajma|red beans/.test(normalized)) return 'kidney beans';
+  if (/chickpea|chana|garbanzo/.test(normalized)) return 'chickpeas';
+  if (/seed/.test(normalized)) return 'mixed seeds';
+  if (/chicken/.test(normalized)) return 'chicken';
+
+  return normalized;
+}
+
+function findIngredientReference(searchName: string): IngredientReference | null {
+  const needle = normalizeFoodName(searchName);
+  const paddedNeedle = ` ${needle} `;
+
+  return INGREDIENT_NUTRITION.find((reference) => {
+    const names = [reference.food_name, ...(reference.aliases || [])];
+    return names.some((name) => {
+      const alias = normalizeFoodName(name);
+      if (!alias) return false;
+      const paddedAlias = ` ${alias} `;
+      return needle === alias || paddedNeedle.includes(paddedAlias) || (alias.length > 3 && paddedAlias.includes(paddedNeedle));
+    });
+  }) || null;
+}
+
+function gramsForIngredient(ingredient: ParsedIngredient, reference?: IngredientReference): number | undefined {
+  if (!ingredient.amount || !ingredient.unit) return reference?.servingGrams;
+
+  const amount = ingredient.amount;
+  switch (ingredient.unit) {
+    case 'kg':
+      return amount * 1000;
+    case 'g':
+      return amount;
+    case 'mg':
+      return amount / 1000;
+    case 'l':
+      return amount * 1000 * (reference?.density || densityForName(ingredient.searchName));
+    case 'ml':
+      return amount * (reference?.density || densityForName(ingredient.searchName));
+    case 'tsp':
+      return amount * teaspoonGrams(ingredient.searchName);
+    case 'tbsp':
+      return amount * tablespoonGrams(ingredient.searchName);
+    case 'cup':
+      return amount * cupGrams(ingredient.searchName);
+    case 'piece':
+      return amount * (reference?.pieceGrams || pieceGrams(ingredient.searchName));
+    default:
+      return reference?.servingGrams;
+  }
+}
+
+function densityForName(name: string) {
+  return /\boil\b|ghee|butter/.test(name) ? 1 : 1;
+}
+
+function teaspoonGrams(name: string) {
+  if (/\boil\b|ghee|butter/.test(name)) return 5;
+  if (/spice|salt|chilli|chili/.test(name)) return 2.5;
+  return 5;
+}
+
+function tablespoonGrams(name: string) {
+  if (/\boil\b|ghee|butter/.test(name)) return 15;
+  if (/cornflour|flour|starch/.test(name)) return 8;
+  if (/seed/.test(name)) return 9;
+  return 15;
+}
+
+function cupGrams(name: string) {
+  if (/rice/.test(name)) return 158;
+  if (/kidney|chickpea|beans|chana/.test(name)) return 170;
+  if (/milk|yogurt|curd|dahi/.test(name)) return 245;
+  if (/cabbage|cucumber|carrot|vegetable/.test(name)) return 100;
+  if (/flour|cornflour|starch/.test(name)) return 120;
+  return 150;
+}
+
+function pieceGrams(name: string) {
+  if (/green chilli|chill|chili|chile/.test(name)) return 2;
+  if (/egg/.test(name)) return 50;
+  if (/apple/.test(name)) return 182;
+  if (/banana/.test(name)) return 118;
+  if (/carrot/.test(name)) return 61;
+  if (/bread|toast|slice/.test(name)) return 25;
+  return 50;
+}
+
+function parseServingGrams(serving?: string) {
+  if (!serving) return undefined;
+  const normalized = serving.toLowerCase();
+  const match = normalized.match(/(\d+(?:\.\d+)?)\s*(kg|g|gram|grams|mg|ml|l)\b/);
+  if (!match?.[1] || !match[2]) return undefined;
+
+  const amount = Number(match[1]);
+  switch (normalizeUnit(match[2])) {
+    case 'kg':
+      return amount * 1000;
+    case 'g':
+      return amount;
+    case 'mg':
+      return amount / 1000;
+    case 'l':
+      return amount * 1000;
+    case 'ml':
+      return amount;
+    default:
+      return undefined;
+  }
+}
+
+function parseAmount(value: string) {
+  if (value.includes('/')) {
+    const [numerator, denominator] = value.split('/').map(Number);
+    return denominator ? numerator / denominator : numerator;
+  }
+  return Number(value);
+}
+
+function normalizeUnit(value: string) {
+  const unit = value.toLowerCase();
+  if (['kg', 'kilogram', 'kilograms'].includes(unit)) return 'kg';
+  if (['g', 'gram', 'grams'].includes(unit)) return 'g';
+  if (['mg', 'milligram', 'milligrams'].includes(unit)) return 'mg';
+  if (['ml', 'milliliter', 'milliliters', 'millilitre', 'millilitres'].includes(unit)) return 'ml';
+  if (['l', 'liter', 'liters', 'litre', 'litres'].includes(unit)) return 'l';
+  if (['tsp', 'teaspoon', 'teaspoons'].includes(unit)) return 'tsp';
+  if (['tbsp', 'tablespoon', 'tablespoons'].includes(unit)) return 'tbsp';
+  if (['cup', 'cups'].includes(unit)) return 'cup';
+  return 'piece';
+}
+
+function displayUnit(unit: string) {
+  if (unit === 'piece') return 'pcs';
+  return unit;
+}
+
+function formatAmount(amount: number) {
+  return Number.isInteger(amount) ? String(amount) : String(Math.round(amount * 100) / 100);
 }
 
 async function getUsdaNutrition(foodName: string, apiKey?: string): Promise<NutritionResult | null> {

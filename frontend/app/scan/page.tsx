@@ -227,6 +227,16 @@ export default function ScanPage() {
     setCustomFood(value);
   }
 
+  async function handleRecalculateFromIngredients() {
+    const foodName = nutrition?.food_name || customFood.trim() || detected?.label || 'Custom meal';
+    if (!manualIngredients.trim()) {
+      setError('Enter ingredients with amounts to calculate the breakdown.');
+      return;
+    }
+
+    await handleConfirmFood(foodName, manualIngredients);
+  }
+
   function startPackagedFlow() {
     setDetected((current) => ({
       label: current?.label || customFood.trim() || 'packaged food',
@@ -483,17 +493,15 @@ export default function ScanPage() {
                         placeholder={needsManualReview ? 'Enter food name to continue...' : 'Enter food name manually...'}
                         className="input-field text-sm"
                       />
-                      {needsManualReview && (
-                        <div className="mt-3">
-                          <p className="text-xs text-gray-500 font-medium mb-2">Main ingredients</p>
-                          <textarea
-                            value={manualIngredients}
-                            onChange={(e) => setManualIngredients(e.target.value)}
-                            placeholder="Example: apple, rice, dal, chicken, oil, paneer..."
-                            className="input-field text-sm min-h-[88px] resize-none"
-                          />
-                        </div>
-                      )}
+                      <div className="mt-3">
+                        <p className="text-xs text-gray-500 font-medium mb-2">Ingredients and amounts</p>
+                        <textarea
+                          value={manualIngredients}
+                          onChange={(e) => setManualIngredients(e.target.value)}
+                          placeholder="Example: chicken 120g, fried oil 7ml, cornflour 1 tbsp, green chillies 3 pcs"
+                          className="input-field text-sm min-h-[88px] resize-none"
+                        />
+                      </div>
                     </div>
 
                     <button
@@ -506,7 +514,9 @@ export default function ScanPage() {
                           <Loader2 className="animate-spin" size={18} /> Fetching nutrition...
                         </span>
                       ) : (
-                        needsManualReview ? 'Continue' : `Confirm: ${confirmedFood}`
+                        manualIngredients.trim()
+                          ? 'Calculate From Ingredients'
+                          : needsManualReview ? 'Continue' : `Confirm: ${confirmedFood}`
                       )}
                     </button>
                     <button onClick={startPackagedFlow} className="btn-secondary w-full mt-2">
@@ -654,24 +664,63 @@ export default function ScanPage() {
                 )}
               </div>
 
+              <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                <label className="text-xs text-gray-500 font-medium mb-2 block">Ingredients and amounts</label>
+                <textarea
+                  value={manualIngredients}
+                  onChange={(e) => setManualIngredients(e.target.value)}
+                  placeholder="Example: chicken 120g, fried oil 7ml, cornflour 1 tbsp, green chillies 3 pcs"
+                  className="input-field text-sm min-h-[88px] resize-none bg-white"
+                />
+                <button
+                  onClick={handleRecalculateFromIngredients}
+                  disabled={loading || !manualIngredients.trim()}
+                  className="btn-secondary w-full mt-3"
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <Loader2 className="animate-spin" size={18} /> Calculating...
+                    </span>
+                  ) : 'Calculate Breakdown'}
+                </button>
+              </div>
+
               {nutrition.items && nutrition.items.length > 0 && (
                 <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                  <p className="text-xs text-gray-500 font-medium mb-3">Detected items</p>
-                  <div className="space-y-2">
-                    {nutrition.items.map((item, index) => (
-                      <div key={`${item.name}-${index}`} className="flex items-center justify-between gap-3 text-sm">
-                        <div className="min-w-0">
-                          <p className="font-semibold text-gray-800 truncate">{item.name}</p>
-                          <p className="text-xs text-gray-400 truncate">{item.portion}</p>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="font-bold text-gray-900">{Math.round(item.calories)} kcal</p>
-                          <p className="text-[10px] text-gray-400">
-                            P:{Math.round(item.protein)}g C:{Math.round(item.carbs)}g F:{Math.round(item.fat)}g
-                          </p>
-                        </div>
-                      </div>
-                    ))}
+                  <p className="text-xs text-gray-500 font-medium mb-3">Ingredient breakdown</p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] text-xs">
+                      <thead>
+                        <tr className="text-left text-gray-500 border-b border-gray-200">
+                          <th className="py-2 pr-3 font-semibold">Ingredient</th>
+                          <th className="py-2 px-2 text-right font-semibold">Calories</th>
+                          <th className="py-2 px-2 text-right font-semibold">Protein</th>
+                          <th className="py-2 px-2 text-right font-semibold">Carbs</th>
+                          <th className="py-2 pl-2 text-right font-semibold">Fat</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {nutrition.items.map((item, index) => (
+                          <tr key={`${item.name}-${index}`}>
+                            <td className="py-2 pr-3">
+                              <p className="font-semibold text-gray-800">{item.name}</p>
+                              <p className="text-[11px] text-gray-400">{item.portion}</p>
+                            </td>
+                            <td className="py-2 px-2 text-right font-semibold text-gray-900">{Math.round(item.calories)} kcal</td>
+                            <td className="py-2 px-2 text-right text-gray-600">{roundMacro(item.protein)}g</td>
+                            <td className="py-2 px-2 text-right text-gray-600">{roundMacro(item.carbs)}g</td>
+                            <td className="py-2 pl-2 text-right text-gray-600">{roundMacro(item.fat)}g</td>
+                          </tr>
+                        ))}
+                        <tr className="bg-white/70">
+                          <td className="py-2 pr-3 font-bold text-gray-900">Total</td>
+                          <td className="py-2 px-2 text-right font-bold text-gray-900">{Math.round(nutrition.calories)} kcal</td>
+                          <td className="py-2 px-2 text-right font-bold text-gray-900">{roundMacro(nutrition.protein)}g</td>
+                          <td className="py-2 px-2 text-right font-bold text-gray-900">{roundMacro(nutrition.carbs)}g</td>
+                          <td className="py-2 pl-2 text-right font-bold text-gray-900">{roundMacro(nutrition.fat)}g</td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
