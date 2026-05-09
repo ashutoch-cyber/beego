@@ -60,7 +60,9 @@ async function parseApiResponse(res: Response, fallbackMessage: string) {
   }
 
   if (!res.ok) {
-    throw new Error(data?.message || fallbackMessage)
+    const error = new Error(data?.message || fallbackMessage) as Error & Record<string, unknown>
+    if (data && typeof data === 'object') Object.assign(error, data)
+    throw error
   }
 
   return data
@@ -101,6 +103,24 @@ export const register = (email: string, password: string) =>
   fetchWithAuth('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
+  })
+
+export const verifyEmail = (token: string) =>
+  fetchWithAuth('/api/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+
+export const forgotPassword = (email: string) =>
+  fetchWithAuth('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  })
+
+export const resetPassword = (token: string, password: string) =>
+  fetchWithAuth('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
   })
 
 export const uploadImage = async (file: File) => {
@@ -248,6 +268,9 @@ export const exportData = () => fetchWithAuth('/api/export')
 export const api = {
   login,
   register,
+  verifyEmail,
+  forgotPassword,
+  resetPassword,
   uploadImage,
   detectFood,
   analyzeMealFast,

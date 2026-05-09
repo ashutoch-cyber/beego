@@ -11,6 +11,9 @@ export interface Env {
   OPENAI_VISION_MODEL?: string;
   USDA_API_KEY?: string;
   JWT_SECRET?: string;
+  RESEND_API_KEY?: string;
+  AUTH_EMAIL_FROM?: string;
+  APP_URL?: string;
 }
 
 type DetectionResult = {
@@ -199,6 +202,9 @@ export default {
     try {
       if (path === '/api/auth/register' && request.method === 'POST') return await handleRegister(request, env);
       if (path === '/api/auth/login' && request.method === 'POST') return await handleLogin(request, env);
+      if (path === '/api/auth/verify-email' && request.method === 'POST') return await handleVerifyEmail(request, env);
+      if (path === '/api/auth/forgot-password' && request.method === 'POST') return await handleForgotPassword(request, env);
+      if (path === '/api/auth/reset-password' && request.method === 'POST') return await handleResetPassword(request, env);
 
       // Public health check and welcome
       if (path === '/health') return jsonResponse({ status: 'ok', timestamp: new Date().toISOString() });
@@ -263,6 +269,25 @@ async function hashPassword(password: string): Promise<string> {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function createSecureToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function hoursFromNow(hours: number): string {
+  return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+}
+
+function appUrl(env: Env): string {
+  return String(env.APP_URL || 'https://beego-c6k.pages.dev').replace(/\/+$/, '');
+}
+
 async function createToken(payload: any, secret: string): Promise<string> {
   const header = { alg: 'HS256', typ: 'JWT' };
   const base64Url = (str: string) => btoa(str).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -296,9 +321,6 @@ async function verifyToken(token: string, secret: string): Promise<number | null
 }
 
 async function handleRegister(request: Request, env: Env): Promise<Response> {
-  const jwtSecret = getJwtSecret(env);
-  if (!jwtSecret) return authConfigErrorResponse();
-
   const body = await readJsonBody(request);
   const email = String(body?.email || '').trim().toLowerCase();
   const password = String(body?.password || '');
@@ -308,9 +330,21 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
 
   const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existing) return jsonResponse({ message: 'Email already registered' }, 409);
-  const result = await env.DB.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').bind(email, await hashPassword(password)).run();
+  const result = await env.DB.prepare('INSERT INTO users (email, password_hash, email_verified) VALUES (?, ?, 0)')
+    .bind(email, await hashPassword(password))
+    .run();
   const userId = result.meta.last_row_id;
-  return jsonResponse({ token: await createToken({ userId, email }, jwtSecret), userId, email });
+  const emailResult = await createAndSendVerificationEmail(env, Number(userId), email);
+  return jsonResponse({
+    userId,
+    email,
+    verificationRequired: true,
+    emailSent: emailResult.sent,
+    message: emailResult.sent
+      ? 'Verification email sent. Please check your inbox.'
+      : 'Account created, but email sending is not configured yet.',
+    verificationUrl: emailResult.sent ? undefined : emailResult.url,
+  });
 }
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
@@ -322,9 +356,193 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   const password = String(body?.password || '');
   if (!email || !password) return jsonResponse({ message: 'Enter your email and password.' }, 400);
 
-  const user = await env.DB.prepare('SELECT id, email, password_hash FROM users WHERE email = ?').bind(email).first() as any;
+  const user = await env.DB.prepare('SELECT id, email, password_hash, email_verified FROM users WHERE email = ?').bind(email).first() as any;
   if (!user || (await hashPassword(password)) !== user.password_hash) return jsonResponse({ message: 'Invalid credentials' }, 401);
+  if (!user.email_verified) {
+    const emailResult = await createAndSendVerificationEmail(env, user.id, user.email);
+    return jsonResponse({
+      message: emailResult.sent
+        ? 'Please verify your email first. We sent a new verification link.'
+        : 'Please verify your email first. Email sending is not configured yet.',
+      verificationRequired: true,
+      emailSent: emailResult.sent,
+      verificationUrl: emailResult.sent ? undefined : emailResult.url,
+    }, 403);
+  }
   return jsonResponse({ token: await createToken({ userId: user.id, email: user.email }, jwtSecret), userId: user.id, email: user.email });
+}
+
+async function handleVerifyEmail(request: Request, env: Env): Promise<Response> {
+  const jwtSecret = getJwtSecret(env);
+  if (!jwtSecret) return authConfigErrorResponse();
+
+  const body = await readJsonBody(request);
+  const token = String(body?.token || '').trim();
+  if (!token) return jsonResponse({ message: 'Verification token is missing.' }, 400);
+
+  const tokenHash = await sha256Hex(token);
+  const row = await env.DB.prepare(
+    'SELECT evt.user_id, evt.expires_at, u.email FROM email_verification_tokens evt JOIN users u ON u.id = evt.user_id WHERE evt.token_hash = ?'
+  ).bind(tokenHash).first() as any;
+
+  if (!row || new Date(row.expires_at).getTime() < Date.now()) {
+    return jsonResponse({ message: 'This verification link is invalid or expired.' }, 400);
+  }
+
+  await env.DB.prepare('UPDATE users SET email_verified = 1, email_verified_at = CURRENT_TIMESTAMP WHERE id = ?').bind(row.user_id).run();
+  await env.DB.prepare('DELETE FROM email_verification_tokens WHERE user_id = ?').bind(row.user_id).run();
+
+  return jsonResponse({
+    token: await createToken({ userId: row.user_id, email: row.email }, jwtSecret),
+    userId: row.user_id,
+    email: row.email,
+    message: 'Email verified. You are signed in.',
+  });
+}
+
+async function handleForgotPassword(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonBody(request);
+  const email = String(body?.email || '').trim().toLowerCase();
+  if (!email || !email.includes('@')) return jsonResponse({ message: 'Enter a valid email address.' }, 400);
+
+  const user = await env.DB.prepare('SELECT id, email FROM users WHERE email = ?').bind(email).first() as any;
+  let sent = false;
+  if (user) {
+    const result = await createAndSendPasswordResetEmail(env, user.id, user.email);
+    sent = result.sent;
+  }
+
+  return jsonResponse({
+    message: sent
+      ? 'Password reset email sent. Please check your inbox.'
+      : 'If that email is registered, a password reset link will be sent.',
+    emailSent: sent,
+  });
+}
+
+async function handleResetPassword(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonBody(request);
+  const token = String(body?.token || '').trim();
+  const password = String(body?.password || '');
+  if (!token) return jsonResponse({ message: 'Reset token is missing.' }, 400);
+  if (password.length < 6) return jsonResponse({ message: 'Password must be at least 6 characters.' }, 400);
+
+  const tokenHash = await sha256Hex(token);
+  const row = await env.DB.prepare(
+    'SELECT prt.user_id, prt.expires_at FROM password_reset_tokens prt WHERE prt.token_hash = ?'
+  ).bind(tokenHash).first() as any;
+
+  if (!row || new Date(row.expires_at).getTime() < Date.now()) {
+    return jsonResponse({ message: 'This reset link is invalid or expired.' }, 400);
+  }
+
+  await env.DB.prepare('UPDATE users SET password_hash = ?, email_verified = 1, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP) WHERE id = ?')
+    .bind(await hashPassword(password), row.user_id)
+    .run();
+  await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(row.user_id).run();
+
+  return jsonResponse({ message: 'Password reset successfully. You can sign in with your new password.' });
+}
+
+async function createAndSendVerificationEmail(env: Env, userId: number, email: string): Promise<{ sent: boolean; url: string }> {
+  await env.DB.prepare('DELETE FROM email_verification_tokens WHERE user_id = ?').bind(userId).run();
+  const token = createSecureToken();
+  const tokenHash = await sha256Hex(token);
+  const expiresAt = hoursFromNow(24);
+  await env.DB.prepare('INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
+    .bind(userId, tokenHash, expiresAt)
+    .run();
+
+  const url = `${appUrl(env)}/verify-email?token=${encodeURIComponent(token)}`;
+  const sent = await sendAuthEmail(env, {
+    to: email,
+    subject: 'Verify your NutriSnap email',
+    heading: 'Verify your email',
+    intro: 'Tap the button below to verify your NutriSnap account. You will be signed in automatically after verification.',
+    buttonLabel: 'Verify and sign in',
+    url,
+    footer: 'This verification link expires in 24 hours.',
+  });
+
+  return { sent, url };
+}
+
+async function createAndSendPasswordResetEmail(env: Env, userId: number, email: string): Promise<{ sent: boolean; url: string }> {
+  await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(userId).run();
+  const token = createSecureToken();
+  const tokenHash = await sha256Hex(token);
+  const expiresAt = hoursFromNow(1);
+  await env.DB.prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
+    .bind(userId, tokenHash, expiresAt)
+    .run();
+
+  const url = `${appUrl(env)}/reset-password?token=${encodeURIComponent(token)}`;
+  const sent = await sendAuthEmail(env, {
+    to: email,
+    subject: 'Reset your NutriSnap password',
+    heading: 'Reset your password',
+    intro: 'Use this link only to reset your password. If you did not request this, you can ignore this email.',
+    buttonLabel: 'Reset password',
+    url,
+    footer: 'This password reset link expires in 1 hour.',
+  });
+
+  return { sent, url };
+}
+
+async function sendAuthEmail(
+  env: Env,
+  message: { to: string; subject: string; heading: string; intro: string; buttonLabel: string; url: string; footer: string },
+): Promise<boolean> {
+  const apiKey = String(env.RESEND_API_KEY || '').trim();
+  if (!apiKey) return false;
+
+  const from = String(env.AUTH_EMAIL_FROM || 'NutriSnap <onboarding@resend.dev>').trim();
+  const html = authEmailHtml(message);
+  const text = `${message.heading}\n\n${message.intro}\n\n${message.url}\n\n${message.footer}`;
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: message.to,
+        subject: message.subject,
+        html,
+        text,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function authEmailHtml(message: { heading: string; intro: string; buttonLabel: string; url: string; footer: string }) {
+  return `
+    <div style="margin:0;padding:32px;background:#f5faf7;font-family:Inter,Arial,sans-serif;color:#1B4332;">
+      <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #dce8e1;border-radius:24px;padding:28px;">
+        <div style="width:56px;height:56px;border-radius:18px;background:#2D6A4F;color:white;display:flex;align-items:center;justify-content:center;font-size:24px;">N</div>
+        <h1 style="margin:24px 0 8px;font-size:24px;line-height:1.2;color:#1B4332;">${escapeHtml(message.heading)}</h1>
+        <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#315743;">${escapeHtml(message.intro)}</p>
+        <a href="${escapeHtml(message.url)}" style="display:block;text-align:center;background:#2D6A4F;color:white;text-decoration:none;font-weight:800;border-radius:16px;padding:14px 18px;">${escapeHtml(message.buttonLabel)}</a>
+        <p style="margin:22px 0 0;font-size:12px;line-height:1.5;color:#6b8b7a;">${escapeHtml(message.footer)}</p>
+      </div>
+    </div>
+  `;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 async function handleUpload(request: Request, env: Env, userId: number): Promise<Response> {

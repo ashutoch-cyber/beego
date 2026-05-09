@@ -12,7 +12,27 @@ CREATE TABLE IF NOT EXISTS users (
   water_goal INTEGER DEFAULT 2500,
   weight_goal REAL DEFAULT 70,
   current_weight REAL,
+  email_verified INTEGER DEFAULT 0,
+  email_verified_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  token_hash TEXT UNIQUE NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  token_hash TEXT UNIQUE NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 -- Meals table
@@ -59,3 +79,5 @@ CREATE INDEX IF NOT EXISTS idx_meals_user_date ON meals(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_meals_user_created ON meals(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_weight_user ON weight_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_water_user_date ON water_logs(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_email_verification_token ON email_verification_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_tokens(token_hash);
