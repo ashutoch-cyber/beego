@@ -1,20 +1,23 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Camera, Upload, X, Check, AlertTriangle, Sparkles, Loader2, Package, FileText, Images, Clock, CheckCircle2, Utensils } from 'lucide-react';
+import { Camera, Upload, X, Check, AlertTriangle, Sparkles, Loader2, Package, FileText, Images, Clock, CheckCircle2, Utensils, ScanBarcode, Eye, Layers3, Wand2 } from 'lucide-react';
 import BottomNav from '@/components/BottomNav';
-import { analyzeMeal, analyzeNutritionLabel, detectFood, getNutrition, logMeal } from '@/lib/api';
+import { analyzeMeal, analyzeMealFast, analyzeNutritionLabel, detectFood, getNutrition, logMeal } from '@/lib/api';
 import { cacheMeal } from '@/lib/offline';
 
 type Detection = {
   label: string;
   score: number;
+  is_food?: boolean;
   kind?: 'food' | 'packaged_food' | 'not_food' | 'manual';
   needsReview?: boolean;
   needsLabel?: boolean;
   message?: string;
   objectLabel?: string;
 };
+
+type AnalysisPhase = 'idle' | 'detecting' | 'detailing';
 
 type Nutrition = {
   food_name?: string;
@@ -41,6 +44,17 @@ type Nutrition = {
     fat: number;
     confidence?: number;
   }>;
+  ingredients?: Array<{
+    name: string;
+    serving: string;
+    macros: {
+      calories: number;
+      protein: number;
+      carbs: number;
+      fat: number;
+    };
+    confidence?: number;
+  }>;
 };
 
 type SnapGalleryItem = {
@@ -52,6 +66,8 @@ type SnapGalleryItem = {
   status: 'Processing' | 'Auto-Tracked' | 'Needs Review';
 };
 
+const NO_FOOD_MESSAGE = 'No food detected. Please snap a picture of a meal or packaged food.';
+
 export default function ScanPage() {
   const [image, setImage] = useState<string | null>(null);
   const [imageKey, setImageKey] = useState<string>('');
@@ -59,9 +75,11 @@ export default function ScanPage() {
   const [detected, setDetected] = useState<Detection | null>(null);
   const [nutrition, setNutrition] = useState<Nutrition | null>(null);
   const [loading, setLoading] = useState(false);
+  const [analysisPhase, setAnalysisPhase] = useState<AnalysisPhase>('idle');
   const [step, setStep] = useState<'upload' | 'detect' | 'confirm' | 'label' | 'nutrition' | 'done'>('upload');
   const [customFood, setCustomFood] = useState('');
   const [manualIngredients, setManualIngredients] = useState('');
+  const [aiEditOpen, setAiEditOpen] = useState(false);
   const [manualNutrition, setManualNutrition] = useState({ calories: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', sodium: '' });
   const [mealType, setMealType] = useState('breakfast');
   const [snapOverlayOpen, setSnapOverlayOpen] = useState(false);
@@ -77,8 +95,21 @@ export default function ScanPage() {
   }, []);
 
   function normalizeNutritionResult(data: any, fallbackName = 'Food'): Nutrition {
-    const items = Array.isArray(data?.items)
-      ? data.items.map((item: any) => ({
+    const rawItems = Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data?.ingredients)
+        ? data.ingredients.map((ingredient: any) => ({
+          name: ingredient?.name,
+          portion: ingredient?.serving,
+          calories: ingredient?.macros?.calories,
+          protein: ingredient?.macros?.protein,
+          carbs: ingredient?.macros?.carbs,
+          fat: ingredient?.macros?.fat,
+          confidence: ingredient?.confidence,
+        }))
+        : [];
+    const items = rawItems
+      .map((item: any) => ({
         name: String(item?.name || 'Food'),
         portion: String(item?.portion || 'estimated portion'),
         calories: Math.round(toNumber(item?.calories)),
@@ -87,7 +118,17 @@ export default function ScanPage() {
         fat: roundMacro(item?.fat),
         confidence: toNumber(item?.confidence),
       })).filter((item: NonNullable<Nutrition['items']>[number]) => item.name && (item.calories || item.protein || item.carbs || item.fat))
-      : [];
+    const ingredients = items.map((item: NonNullable<Nutrition['items']>[number]) => ({
+      name: item.name,
+      serving: item.portion,
+      macros: {
+        calories: item.calories,
+        protein: item.protein,
+        carbs: item.carbs,
+        fat: item.fat,
+      },
+      confidence: item.confidence,
+    }));
 
     return {
       food_name: String(data?.food_name || fallbackName || 'Food'),
@@ -106,6 +147,7 @@ export default function ScanPage() {
       needsReview: Boolean(data?.needsReview),
       message: data?.message,
       items,
+      ingredients,
     };
   }
 
@@ -118,13 +160,15 @@ export default function ScanPage() {
   }
 
   function detectionFromAnalysis(data: any): Detection {
+    const explicitNonFood = data?.is_food === false || data?.kind === 'not_food';
     return {
       label: String(data?.label || data?.food_name || '').trim(),
       score: toNumber(data?.score ?? data?.confidence),
-      kind: data?.kind || 'food',
+      is_food: data?.is_food,
+      kind: explicitNonFood ? 'not_food' : (data?.kind || 'food'),
       needsReview: Boolean(data?.needsReview),
       needsLabel: Boolean(data?.needsLabel),
-      message: data?.message,
+      message: explicitNonFood ? NO_FOOD_MESSAGE : data?.message,
       objectLabel: data?.objectLabel,
     };
   }
@@ -132,7 +176,11 @@ export default function ScanPage() {
   const handleFile = useCallback(async (file: File) => {
     setError('');
     setLoading(true);
+    setAnalysisPhase('detecting');
     setSnapOverlayOpen(false);
+    setNutrition(null);
+    setDetected(null);
+    setAiEditOpen(false);
     const capturedAt = new Date(file.lastModified || Date.now());
     const inferredMeal = inferMealType(capturedAt);
     let snapId = '';
@@ -150,6 +198,33 @@ export default function ScanPage() {
       setSnapGallery(loadSnapGallery());
 
       setStep('detect');
+      let fastDetection: Detection | null = null;
+      try {
+        const fastRes = await analyzeMealFast(file);
+        fastDetection = detectionFromAnalysis(fastRes);
+        setDetected(fastDetection);
+        if (fastDetection.label && fastDetection.kind === 'food') setCustomFood(fastDetection.label);
+        updateSnapGalleryItem(snapId, {
+          foodName: fastRes?.food_name || fastDetection.label || 'Food scan',
+          mealType: inferredMeal,
+          status: fastDetection.kind === 'food' && !fastDetection.needsLabel ? 'Processing' : 'Needs Review',
+        });
+        setSnapGallery(loadSnapGallery());
+
+        if (fastDetection.kind === 'not_food' || fastDetection.is_food === false) {
+          setStep('confirm');
+          return;
+        }
+
+        if (fastDetection.kind === 'packaged_food' || fastDetection.needsLabel) {
+          setStep('confirm');
+          return;
+        }
+      } catch {
+        fastDetection = null;
+      }
+
+      setAnalysisPhase('detailing');
       const scanRes = await analyzeMeal(file);
       const nextDetection = detectionFromAnalysis(scanRes);
       setDetected(nextDetection);
@@ -171,6 +246,7 @@ export default function ScanPage() {
       setStep('nutrition');
     } catch (err: any) {
       try {
+        setAnalysisPhase('detecting');
         const detectRes = await detectFood(file);
         setDetected(detectRes);
         if (snapId) {
@@ -199,6 +275,7 @@ export default function ScanPage() {
       }
     } finally {
       setLoading(false);
+      setAnalysisPhase('idle');
     }
   }, []);
 
@@ -361,8 +438,10 @@ export default function ScanPage() {
     setDetected(null);
     setNutrition(null);
     setStep('upload');
+    setAnalysisPhase('idle');
     setCustomFood('');
     setManualIngredients('');
+    setAiEditOpen(false);
     setManualNutrition({ calories: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', sodium: '' });
     setError('');
   }
@@ -371,14 +450,14 @@ export default function ScanPage() {
   const confirmedFood = customFood.trim() || detectedLabel;
   const needsManualReview = Boolean(detected?.needsReview || !detectedLabel);
   const isPackagedFood = detected?.kind === 'packaged_food' || detected?.needsLabel;
-  const isNotFood = detected?.kind === 'not_food';
+  const isNotFood = detected?.kind === 'not_food' || detected?.is_food === false;
   const doneFoodName = confirmedFood || nutrition?.food_name || 'Meal';
   const progressSteps = ['upload', 'detect', 'confirm', ...(isPackagedFood || step === 'label' ? ['label'] : []), 'nutrition', 'done'];
   const currentStepIndex = progressSteps.indexOf(step);
 
   return (
     <div className="min-h-screen bg-[#f5faf7] pb-24">
-      <div className="rounded-b-[2.5rem] bg-[#0f3f27] px-6 pb-8 pt-12 text-white">
+      <div className="rounded-b-[2.5rem] bg-[#1B4332] px-6 pb-8 pt-12 text-white">
         <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#9ed8b6]">Healthify Snap</p>
         <h1 className="mt-1 text-2xl font-black">AI Food Scanner</h1>
         <p className="mt-1 text-sm font-medium text-[#c7ead4]">Snap a meal and log segmented ingredients</p>
@@ -416,7 +495,7 @@ export default function ScanPage() {
         {/* Upload Step */}
         {step === 'upload' && (
           <div className="space-y-4">
-            <div className="rounded-[2rem] bg-[#0f3f27] p-5 text-white shadow-[0_18px_45px_rgba(15,65,38,0.18)]">
+            <div className="rounded-[2rem] bg-[#1B4332] p-5 text-white shadow-[0_18px_45px_rgba(27,67,50,0.18)]">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#9ed8b6]">Healthify AI</p>
@@ -430,7 +509,7 @@ export default function ScanPage() {
               <button
                 onClick={() => setSnapOverlayOpen(true)}
                 disabled={loading}
-                className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-6 py-4 font-black text-[#0f7a3b] shadow-lg shadow-black/10"
+                className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-6 py-4 font-black text-[#2D6A4F] shadow-lg shadow-black/10"
               >
                 {loading ? <Loader2 className="animate-spin" size={18} /> : <Camera size={18} />}
                 Open Snap Food
@@ -460,6 +539,7 @@ export default function ScanPage() {
               onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
             />
 
+            <AccuracyTips />
             <SnapGallery items={snapGallery} />
           </div>
         )}
@@ -469,7 +549,7 @@ export default function ScanPage() {
             <div className="mx-auto w-full max-w-lg rounded-[2rem] bg-white p-5 shadow-2xl">
               <div className="mb-5 flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#0f7a3b]">Snap Food</p>
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#2D6A4F]">Snap Food</p>
                   <h3 className="mt-1 text-xl font-black text-[#183c2a]">Choose photo source</h3>
                 </div>
                 <button
@@ -483,7 +563,7 @@ export default function ScanPage() {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => cameraInputRef.current?.click()}
-                  className="flex flex-col items-center justify-center rounded-[1.5rem] bg-[#0f7a3b] p-5 text-white"
+                  className="flex flex-col items-center justify-center rounded-[1.5rem] bg-[#2D6A4F] p-5 text-white"
                 >
                   <Camera size={28} />
                   <span className="mt-3 text-sm font-black">Camera</span>
@@ -495,6 +575,9 @@ export default function ScanPage() {
                   <Images size={28} />
                   <span className="mt-3 text-sm font-black">Google Photos</span>
                 </button>
+              </div>
+              <div className="mt-4">
+                <AccuracyTips compact />
               </div>
               <p className="mt-4 text-center text-xs font-semibold text-[#7b9587]">
                 Photo time is used to suggest Breakfast, Lunch, Dinner, or Snack.
@@ -510,15 +593,33 @@ export default function ScanPage() {
               <div className="relative rounded-xl overflow-hidden">
                 <img src={image} alt="Food" className="w-full h-64 object-cover" />
                 {step === 'detect' && (
-                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                    <div className="text-center">
-                      <Sparkles className="text-white mx-auto mb-2 animate-pulse" size={32} />
-                      <p className="text-white font-semibold">Analyzing with AI...</p>
+                  <div className="absolute inset-0 flex items-end bg-gradient-to-t from-[#1B4332]/85 via-[#1B4332]/20 to-transparent p-4">
+                    <div className="w-full rounded-2xl bg-white/95 p-3 shadow-xl backdrop-blur">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#e8f5ee] text-[#2D6A4F]">
+                          {analysisPhase === 'detailing' ? <Layers3 size={19} /> : <Sparkles className="animate-pulse" size={19} />}
+                        </div>
+                        <div>
+                          <p className="text-xs font-black uppercase tracking-[0.18em] text-[#6b8b7a]">
+                            {analysisPhase === 'detailing' ? 'Food detected' : 'Snap Food AI'}
+                          </p>
+                          <p className="text-sm font-black text-[#1B4332]">
+                            {analysisPhase === 'detailing' && detected?.label ? detected.label : 'Detecting ingredients...'}
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
               </div>
             </div>
+
+            {step === 'detect' && (
+              <DetectingIngredientsSkeleton
+                phase={analysisPhase}
+                label={detected?.label || customFood}
+              />
+            )}
 
             {step === 'confirm' && detected && (
               <div className="card mt-4 animate-slide-up">
@@ -534,7 +635,7 @@ export default function ScanPage() {
                       </div>
                     </div>
                     <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl p-3 mb-4">
-                      {detected.message || 'This does not look like food. Please upload a meal or packaged food.'}
+                      {NO_FOOD_MESSAGE}
                     </p>
                     <button onClick={reset} className="btn-primary w-full">
                       Scan Food Instead
@@ -748,201 +849,93 @@ export default function ScanPage() {
 
         {/* Nutrition Step */}
         {step === 'nutrition' && nutrition && (
-          <div className="animate-slide-up">
-            <div className="card">
-              <h3 className="font-bold text-gray-900 text-lg mb-4">Nutrition Facts</h3>
-              {nutrition.needsReview && (
-                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3 mb-4">
-                  {nutrition.message || 'Review the scanned totals before logging.'}
-                </p>
-              )}
-
-              <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                <label className="text-xs text-gray-500 font-medium mb-2 block">Food name</label>
+          <div className="animate-slide-up pb-28">
+            <div className="rounded-[1.75rem] border border-[#dce8e1] bg-white p-5 shadow-sm">
+              <div className="mb-5">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-[#6b8b7a]">Snap Food result</p>
                 <input
                   type="text"
                   value={nutrition.food_name || customFood}
                   onChange={(e) => updateNutritionFoodName(e.target.value)}
-                  className="input-field text-sm bg-white"
+                  className="mt-2 w-full rounded-2xl border border-[#dce8e1] bg-[#f8fbf9] px-4 py-3 text-xl font-black text-[#1B4332] outline-none focus:border-[#2D6A4F] focus:ring-2 focus:ring-[#b7dfcb]"
                 />
-                {(nutrition.serving || nutrition.source || nutrition.confidence) && (
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    {nutrition.serving && (
-                      <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-xs text-gray-500">
-                        {nutrition.serving}
-                      </span>
-                    )}
-                    {nutrition.source && (
-                      <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-xs text-gray-500 capitalize">
-                        {nutrition.source}
-                      </span>
-                    )}
-                    {Boolean(nutrition.confidence) && (
-                      <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-xs text-gray-500">
-                        {Math.round((nutrition.confidence || 0) * 100)}% confidence
-                      </span>
-                    )}
-                  </div>
-                )}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {nutrition.serving && (
+                    <span className="rounded-full border border-[#dce8e1] bg-white px-3 py-1 text-xs font-bold text-[#607869]">
+                      {nutrition.serving}
+                    </span>
+                  )}
+                  {nutrition.source && (
+                    <span className="rounded-full border border-[#dce8e1] bg-white px-3 py-1 text-xs font-bold capitalize text-[#607869]">
+                      {nutrition.source}
+                    </span>
+                  )}
+                  {Boolean(nutrition.confidence) && (
+                    <span className="rounded-full border border-[#dce8e1] bg-white px-3 py-1 text-xs font-bold text-[#607869]">
+                      {Math.round((nutrition.confidence || 0) * 100)}% confidence
+                    </span>
+                  )}
+                </div>
               </div>
 
-              <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                <label className="text-xs text-gray-500 font-medium mb-2 block">Ingredients and amounts</label>
-                <textarea
-                  value={manualIngredients}
-                  onChange={(e) => setManualIngredients(e.target.value)}
-                  placeholder="Example: chicken 120g, fried oil 7ml, cornflour 1 tbsp, green chillies 3 pcs"
-                  className="input-field text-sm min-h-[88px] resize-none bg-white"
-                />
-                <button
-                  onClick={handleRecalculateFromIngredients}
-                  disabled={loading || !manualIngredients.trim()}
-                  className="btn-secondary w-full mt-3"
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <Loader2 className="animate-spin" size={18} /> Calculating...
-                    </span>
-                  ) : 'Calculate Breakdown'}
-                </button>
-              </div>
+              {nutrition.needsReview && (
+                <p className="mb-4 rounded-2xl border border-[#f3d89c] bg-[#fff8e7] p-3 text-xs font-semibold leading-relaxed text-[#8a5a00]">
+                  {nutrition.message || 'Review the scanned totals before logging.'}
+                </p>
+              )}
+
+              {aiEditOpen && (
+                <div className="mb-4 rounded-[1.5rem] bg-[#f3f7f5] p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Wand2 size={17} className="text-[#2D6A4F]" />
+                    <p className="text-sm font-black text-[#1B4332]">Edit with AI</p>
+                  </div>
+                  <textarea
+                    value={manualIngredients}
+                    onChange={(e) => setManualIngredients(e.target.value)}
+                    placeholder="Example: chicken 120g, fried oil 7ml, cornflour 1 tbsp, green chillies 3 pcs"
+                    className="min-h-[96px] w-full resize-none rounded-2xl border border-[#dce8e1] bg-white px-4 py-3 text-sm font-semibold text-[#1B4332] outline-none focus:border-[#2D6A4F] focus:ring-2 focus:ring-[#b7dfcb]"
+                  />
+                  <button
+                    onClick={handleRecalculateFromIngredients}
+                    disabled={loading || !manualIngredients.trim()}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#2D6A4F] px-4 py-3 text-sm font-black text-white disabled:opacity-50"
+                  >
+                    {loading ? <Loader2 className="animate-spin" size={17} /> : <Layers3 size={17} />}
+                    Calculate Breakdown
+                  </button>
+                </div>
+              )}
 
               {nutrition.ingredientsText && (
-                <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                  <p className="text-xs text-gray-500 font-medium mb-2">Ingredients read from label</p>
-                  <p className="text-sm text-gray-700 leading-relaxed">{nutrition.ingredientsText}</p>
+                <div className="mb-4 rounded-[1.5rem] bg-[#f8fbf9] p-4">
+                  <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-[#6b8b7a]">Ingredients read from label</p>
+                  <p className="text-sm font-semibold leading-relaxed text-[#315743]">{nutrition.ingredientsText}</p>
                 </div>
               )}
 
-              {nutrition.items && nutrition.items.length > 0 && (
-                <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                  <p className="text-xs text-gray-500 font-medium mb-3">Ingredient breakdown</p>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[520px] text-xs">
-                      <thead>
-                        <tr className="text-left text-gray-500 border-b border-gray-200">
-                          <th className="py-2 pr-3 font-semibold">Ingredient</th>
-                          <th className="py-2 px-2 text-right font-semibold">Calories</th>
-                          <th className="py-2 px-2 text-right font-semibold">Protein</th>
-                          <th className="py-2 px-2 text-right font-semibold">Carbs</th>
-                          <th className="py-2 pl-2 text-right font-semibold">Fat</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-200">
-                        {nutrition.items.map((item, index) => (
-                          <tr key={`${item.name}-${index}`}>
-                            <td className="py-2 pr-3">
-                              <p className="font-semibold text-gray-800">{item.name}</p>
-                              <p className="text-[11px] text-gray-400">{item.portion}</p>
-                            </td>
-                            <td className="py-2 px-2 text-right font-semibold text-gray-900">{Math.round(item.calories)} kcal</td>
-                            <td className="py-2 px-2 text-right text-gray-600">{roundMacro(item.protein)}g</td>
-                            <td className="py-2 px-2 text-right text-gray-600">{roundMacro(item.carbs)}g</td>
-                            <td className="py-2 pl-2 text-right text-gray-600">{roundMacro(item.fat)}g</td>
-                          </tr>
-                        ))}
-                        <tr className="bg-white/70">
-                          <td className="py-2 pr-3 font-bold text-gray-900">Total</td>
-                          <td className="py-2 px-2 text-right font-bold text-gray-900">{Math.round(nutrition.calories)} kcal</td>
-                          <td className="py-2 px-2 text-right font-bold text-gray-900">{roundMacro(nutrition.protein)}g</td>
-                          <td className="py-2 px-2 text-right font-bold text-gray-900">{roundMacro(nutrition.carbs)}g</td>
-                          <td className="py-2 pl-2 text-right font-bold text-gray-900">{roundMacro(nutrition.fat)}g</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3 mb-4">
-                <div className="bg-orange-50 rounded-xl p-4 text-center">
-                  <input
-                    type="number"
-                    min="0"
-                    value={Math.round(nutrition.calories)}
-                    onChange={(e) => updateNutritionField('calories', e.target.value)}
-                    className="w-full bg-transparent text-center text-2xl font-bold text-orange-600 outline-none"
-                  />
-                  <p className="text-xs text-orange-400 font-medium mt-1">Calories (kcal)</p>
-                </div>
-                <div className="bg-blue-50 rounded-xl p-4 text-center">
-                  <div className="flex items-baseline justify-center">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={nutrition.protein}
-                      onChange={(e) => updateNutritionField('protein', e.target.value)}
-                      className="w-20 bg-transparent text-center text-2xl font-bold text-blue-600 outline-none"
-                    />
-                    <span className="text-blue-600 font-bold">g</span>
-                  </div>
-                  <p className="text-xs text-blue-400 font-medium mt-1">Protein</p>
-                </div>
-                <div className="bg-yellow-50 rounded-xl p-4 text-center">
-                  <div className="flex items-baseline justify-center">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={nutrition.carbs}
-                      onChange={(e) => updateNutritionField('carbs', e.target.value)}
-                      className="w-20 bg-transparent text-center text-2xl font-bold text-yellow-600 outline-none"
-                    />
-                    <span className="text-yellow-600 font-bold">g</span>
-                  </div>
-                  <p className="text-xs text-yellow-400 font-medium mt-1">Carbs</p>
-                </div>
-                <div className="bg-red-50 rounded-xl p-4 text-center">
-                  <div className="flex items-baseline justify-center">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={nutrition.fat}
-                      onChange={(e) => updateNutritionField('fat', e.target.value)}
-                      className="w-20 bg-transparent text-center text-2xl font-bold text-red-600 outline-none"
-                    />
-                    <span className="text-red-600 font-bold">g</span>
-                  </div>
-                  <p className="text-xs text-red-400 font-medium mt-1">Fat</p>
-                </div>
-              </div>
+              <IngredientBreakdownTable nutrition={nutrition} />
+              <MacroCardGrid nutrition={nutrition} onChange={updateNutritionField} />
 
               {(nutrition.sugar !== undefined || nutrition.fiber !== undefined || nutrition.sodium !== undefined) && (
-                <div className="grid grid-cols-3 gap-2 mb-4">
-                  {nutrition.sugar !== undefined && (
-                    <div className="bg-pink-50 rounded-xl p-3 text-center">
-                      <p className="font-bold text-pink-600">{Math.round(nutrition.sugar)}g</p>
-                      <p className="text-[10px] text-pink-400 font-medium mt-1">Sugar</p>
-                    </div>
-                  )}
-                  {nutrition.fiber !== undefined && (
-                    <div className="bg-emerald-50 rounded-xl p-3 text-center">
-                      <p className="font-bold text-emerald-600">{Math.round(nutrition.fiber)}g</p>
-                      <p className="text-[10px] text-emerald-400 font-medium mt-1">Fiber</p>
-                    </div>
-                  )}
-                  {nutrition.sodium !== undefined && (
-                    <div className="bg-slate-50 rounded-xl p-3 text-center">
-                      <p className="font-bold text-slate-600">{Math.round(nutrition.sodium)}mg</p>
-                      <p className="text-[10px] text-slate-400 font-medium mt-1">Sodium</p>
-                    </div>
-                  )}
+                <div className="mb-5 grid grid-cols-3 gap-2">
+                  {nutrition.sugar !== undefined && <MiniNutrient label="Sugar" value={`${roundMacro(nutrition.sugar)}g`} />}
+                  {nutrition.fiber !== undefined && <MiniNutrient label="Fibre" value={`${roundMacro(nutrition.fiber)}g`} />}
+                  {nutrition.sodium !== undefined && <MiniNutrient label="Sodium" value={`${Math.round(nutrition.sodium)}mg`} />}
                 </div>
               )}
 
-              <div className="mb-4">
-                <label className="text-sm font-medium text-gray-700 mb-2 block">Meal Type</label>
-                <div className="grid grid-cols-4 gap-2">
+              <div className="mb-5">
+                <label className="mb-2 block text-sm font-black text-[#1B4332]">Meal Type</label>
+                <div className="flex gap-2 overflow-x-auto pb-1">
                   {['breakfast', 'lunch', 'dinner', 'snack'].map((type) => (
                     <button
                       key={type}
                       onClick={() => setMealType(type)}
-                      className={`py-2 px-1 rounded-xl text-xs font-semibold capitalize transition-all ${
+                      className={`shrink-0 rounded-full px-5 py-2.5 text-sm font-black capitalize transition-all ${
                         mealType === type
-                          ? 'bg-primary-600 text-white shadow-md'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          ? 'bg-[#2D6A4F] text-white shadow-lg shadow-[#2D6A4F]/20'
+                          : 'bg-[#f0f3f1] text-[#315743]'
                       }`}
                     >
                       {type}
@@ -951,34 +944,22 @@ export default function ScanPage() {
                 </div>
               </div>
 
-              <div className="mb-3 grid grid-cols-2 gap-2">
-                {['lunch', 'snack'].map((type) => (
-                  <button
-                    key={type}
-                    onClick={() => handleQuickLog(type)}
-                    disabled={loading}
-                    className="rounded-2xl bg-[#0f3f27] px-3 py-3 text-sm font-black capitalize text-white transition-all active:scale-95 disabled:opacity-60"
-                  >
-                    {type === 'snack' ? 'Log as Morning Snack' : 'Log as Lunch'}
-                  </button>
-                ))}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => handleQuickLog('lunch')}
+                  disabled={loading}
+                  className="rounded-2xl bg-[#1B4332] px-3 py-3 text-sm font-black text-white transition-all active:scale-95 disabled:opacity-60"
+                >
+                  Log as Lunch
+                </button>
+                <button
+                  onClick={() => handleQuickLog('snack')}
+                  disabled={loading}
+                  className="rounded-2xl bg-[#1B4332] px-3 py-3 text-sm font-black text-white transition-all active:scale-95 disabled:opacity-60"
+                >
+                  Morning Snack
+                </button>
               </div>
-
-              <button
-                onClick={handleLogMeal}
-                disabled={loading}
-                className="btn-primary w-full"
-              >
-                {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <Loader2 className="animate-spin" size={18} /> Saving...
-                  </span>
-                ) : (
-                  <span className="flex items-center justify-center gap-2">
-                    <Check size={18} /> Log This Meal
-                  </span>
-                )}
-              </button>
             </div>
           </div>
         )}
@@ -1000,7 +981,189 @@ export default function ScanPage() {
         )}
       </div>
 
-      <BottomNav />
+      {step === 'nutrition' && nutrition ? (
+        <div className="fixed inset-x-0 bottom-0 z-[70] border-t border-[#dce8e1] bg-white/95 px-4 py-3 shadow-[0_-14px_36px_rgba(27,67,50,0.12)] backdrop-blur">
+          <div className="mx-auto grid max-w-lg grid-cols-[0.9fr_1.1fr] gap-3">
+            <button
+              onClick={() => setAiEditOpen((open) => !open)}
+              className="flex items-center justify-center gap-2 rounded-2xl bg-[#eef6f2] px-4 py-4 text-sm font-black text-[#1B4332]"
+            >
+              <Wand2 size={18} /> Edit with AI
+            </button>
+            <button
+              onClick={handleLogMeal}
+              disabled={loading}
+              className="flex items-center justify-center gap-2 rounded-2xl bg-[#2D6A4F] px-4 py-4 text-sm font-black text-white shadow-lg shadow-[#2D6A4F]/25 disabled:opacity-60"
+            >
+              {loading ? <Loader2 className="animate-spin" size={18} /> : <Check size={18} />}
+              Done
+            </button>
+          </div>
+        </div>
+      ) : (
+        <BottomNav />
+      )}
+    </div>
+  );
+}
+
+function AccuracyTips({ compact = false }: { compact?: boolean }) {
+  const tips = [
+    { icon: Eye, title: 'Side views', body: 'Keep the plate angled so portion height is visible.' },
+    { icon: Layers3, title: 'Avoid top-down only', body: 'Show separate ingredients instead of a flat close crop.' },
+    { icon: ScanBarcode, title: 'Use barcode or label', body: 'For packaged food, snap the back nutrition panel.' },
+  ];
+
+  return (
+    <div className={`rounded-[1.5rem] border border-[#dce8e1] bg-white ${compact ? 'p-3' : 'p-4'}`}>
+      <p className="mb-3 text-sm font-black text-[#1B4332]">Tips for better accuracy</p>
+      <div className={compact ? 'grid gap-2' : 'grid gap-3'}>
+        {tips.map(({ icon: Icon, title, body }) => (
+          <div key={title} className="flex items-start gap-3 rounded-2xl bg-[#f8fbf9] p-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#e5f3ec] text-[#2D6A4F]">
+              <Icon size={18} />
+            </div>
+            <div>
+              <p className="text-sm font-black text-[#1B4332]">{title}</p>
+              <p className="mt-0.5 text-xs font-semibold leading-snug text-[#6b8b7a]">{body}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DetectingIngredientsSkeleton({ phase, label }: { phase: AnalysisPhase; label?: string }) {
+  const rows = phase === 'detailing' ? 5 : 3;
+
+  return (
+    <div className="card mt-4">
+      <div className="mb-4 flex items-center gap-3">
+        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#e8f5ee] text-[#2D6A4F]">
+          {phase === 'detailing' ? <Layers3 size={22} /> : <Sparkles className="animate-pulse" size={22} />}
+        </div>
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-[#6b8b7a]">
+            {phase === 'detailing' ? 'Pass 2' : 'Pass 1'}
+          </p>
+          <h3 className="text-lg font-black text-[#1B4332]">
+            {phase === 'detailing' && label ? label : 'Detecting Ingredients...'}
+          </h3>
+        </div>
+      </div>
+
+      <div className="rounded-[1.25rem] bg-[#f8fbf9] p-4">
+        <div className="mb-3 h-4 w-40 animate-pulse rounded-full bg-[#dce8e1]" />
+        <div className="space-y-3">
+          {Array.from({ length: rows }).map((_, index) => (
+            <div key={index} className="flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <div className="h-4 w-3/5 animate-pulse rounded-full bg-[#dce8e1]" />
+                <div className="mt-2 h-3 w-24 animate-pulse rounded-full bg-[#e8efeb]" />
+              </div>
+              <div className="h-5 w-16 animate-pulse rounded-full bg-[#dce8e1]" />
+            </div>
+          ))}
+        </div>
+      </div>
+      <p className="mt-3 text-xs font-semibold text-[#6b8b7a]">
+        {phase === 'detailing'
+          ? 'Dish name is ready. Building calories, protein, carbs, and fat per ingredient.'
+          : 'Checking whether this is food before calculating nutrition.'}
+      </p>
+    </div>
+  );
+}
+
+function IngredientBreakdownTable({ nutrition }: { nutrition: Nutrition }) {
+  const items = nutrition.items?.length
+    ? nutrition.items
+    : [{
+      name: nutrition.food_name || 'Meal',
+      portion: nutrition.serving || 'estimated serving',
+      calories: nutrition.calories,
+      protein: nutrition.protein,
+      carbs: nutrition.carbs,
+      fat: nutrition.fat,
+    }];
+
+  return (
+    <div className="mb-5 rounded-[1.5rem] bg-[#f8fbf9] p-4">
+      <h3 className="mb-3 text-lg font-black text-[#1B4332]">Ingredient breakdown.</h3>
+      <div className="overflow-hidden rounded-2xl border border-[#dce8e1] bg-white">
+        <div className="grid grid-cols-[1.35fr_0.7fr_0.7fr_0.7fr_0.7fr] gap-2 border-b border-[#dce8e1] bg-[#f3f7f5] px-3 py-3 text-[11px] font-black uppercase tracking-[0.08em] text-[#6b8b7a]">
+          <span>Ingredient</span>
+          <span className="text-right">Cal</span>
+          <span className="text-right">Protein</span>
+          <span className="text-right">Carbs</span>
+          <span className="text-right">Fat</span>
+        </div>
+        {items.map((item, index) => (
+          <div key={`${item.name}-${index}`} className="grid grid-cols-[1.35fr_0.7fr_0.7fr_0.7fr_0.7fr] gap-2 border-b border-[#eef3f0] px-3 py-3 text-xs last:border-b-0">
+            <div className="min-w-0">
+              <p className="truncate font-black text-[#1B4332]">{item.name}</p>
+              <p className="mt-0.5 truncate text-[11px] font-semibold text-[#8aa093]">Estimated Serving: {item.portion}</p>
+            </div>
+            <span className="text-right font-black text-[#1B4332]">{Math.round(item.calories)}</span>
+            <span className="text-right font-semibold text-[#315743]">{roundMacro(item.protein)}g</span>
+            <span className="text-right font-semibold text-[#315743]">{roundMacro(item.carbs)}g</span>
+            <span className="text-right font-semibold text-[#315743]">{roundMacro(item.fat)}g</span>
+          </div>
+        ))}
+        <div className="grid grid-cols-[1.35fr_0.7fr_0.7fr_0.7fr_0.7fr] gap-2 border-t-2 border-[#1B4332] bg-white px-3 py-3 text-sm font-black text-[#1B4332]">
+          <span>Total</span>
+          <span className="text-right">{Math.round(nutrition.calories)}</span>
+          <span className="text-right">{roundMacro(nutrition.protein)}g</span>
+          <span className="text-right">{roundMacro(nutrition.carbs)}g</span>
+          <span className="text-right">{roundMacro(nutrition.fat)}g</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MacroCardGrid({
+  nutrition,
+  onChange,
+}: {
+  nutrition: Nutrition;
+  onChange: (field: keyof Pick<Nutrition, 'calories' | 'protein' | 'carbs' | 'fat'>, value: string) => void;
+}) {
+  const cards = [
+    { field: 'calories' as const, label: 'Calories (kcal)', value: Math.round(nutrition.calories), unit: '', bg: 'bg-[#fff4e8]', text: 'text-[#f97316]' },
+    { field: 'protein' as const, label: 'Protein', value: nutrition.protein, unit: 'g', bg: 'bg-[#eaf3ff]', text: 'text-[#2563eb]' },
+    { field: 'carbs' as const, label: 'Carbs', value: nutrition.carbs, unit: 'g', bg: 'bg-[#fffbe6]', text: 'text-[#ca8a04]' },
+    { field: 'fat' as const, label: 'Fat', value: nutrition.fat, unit: 'g', bg: 'bg-[#fff0f0]', text: 'text-[#dc2626]' },
+  ];
+
+  return (
+    <div className="mb-5 grid grid-cols-2 gap-3">
+      {cards.map((card) => (
+        <div key={card.field} className={`${card.bg} rounded-[1.25rem] p-4 text-center`}>
+          <div className="flex items-baseline justify-center gap-1">
+            <input
+              type="number"
+              min="0"
+              step={card.field === 'calories' ? '1' : '0.1'}
+              value={card.value}
+              onChange={(e) => onChange(card.field, e.target.value)}
+              className={`w-20 bg-transparent text-center text-3xl font-black outline-none ${card.text}`}
+            />
+            {card.unit && <span className={`text-lg font-black ${card.text}`}>{card.unit}</span>}
+          </div>
+          <p className={`mt-1 text-xs font-black ${card.text}`}>{card.label}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MiniNutrient({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl bg-[#f3f7f5] p-3 text-center">
+      <p className="font-black text-[#1B4332]">{value}</p>
+      <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#6b8b7a]">{label}</p>
     </div>
   );
 }
@@ -1032,14 +1195,14 @@ function SnapGallery({ items }: { items: SnapGalleryItem[] }) {
           <p className="text-sm font-black text-[#183c2a]">Snap Gallery</p>
           <p className="text-xs font-semibold text-[#7b9587]">Recently captured food photos</p>
         </div>
-        <CheckCircle2 className="text-[#0f7a3b]" size={18} />
+        <CheckCircle2 className="text-[#2D6A4F]" size={18} />
       </div>
       <div className="grid grid-cols-2 gap-3">
         {items.slice(0, 4).map((item) => (
           <div key={item.id} className="overflow-hidden rounded-2xl border border-[#dce8e1] bg-[#f8fcfa]">
             <div className="relative h-28">
               <img src={item.image} alt="" className="h-full w-full object-cover" />
-              <span className="absolute left-2 top-2 rounded-full bg-white/95 px-2 py-1 text-[10px] font-black text-[#0f7a3b] shadow-sm">
+              <span className="absolute left-2 top-2 rounded-full bg-white/95 px-2 py-1 text-[10px] font-black text-[#2D6A4F] shadow-sm">
                 {item.status}
               </span>
             </div>

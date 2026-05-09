@@ -19,7 +19,7 @@ interface MealCardProps {
 
 const mealTypeColors: Record<string, string> = {
   breakfast: 'bg-[#fff4e6] text-[#b85c00]',
-  lunch: 'bg-[#e5f5ec] text-[#0f7a3b]',
+  lunch: 'bg-[#e5f5ec] text-[#2D6A4F]',
   dinner: 'bg-[#eaf1ff] text-[#3156a3]',
   snack: 'bg-[#f0eafe] text-[#6d45b8]',
 };
@@ -41,7 +41,7 @@ export default function MealCard({ meal }: MealCardProps) {
             <Clock size={12} />
             {format(new Date(meal.date), 'h:mm a')}
           </span>
-          <span className="rounded-full bg-[#f0f8f4] px-2 py-0.5 capitalize text-[#0f7a3b]">{meal.meal_type}</span>
+          <span className="rounded-full bg-[#f0f8f4] px-2 py-0.5 capitalize text-[#2D6A4F]">{meal.meal_type}</span>
         </div>
       </div>
       <div className="text-right">

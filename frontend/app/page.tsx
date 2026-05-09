@@ -67,7 +67,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-[#f5faf7] pb-28">
-      <div className="bg-[#0f3f27] px-6 pb-24 pt-12 text-white">
+      <div className="bg-[#1B4332] px-6 pb-24 pt-12 text-white">
         <div className="max-w-lg mx-auto">
           <div className="flex items-center justify-between">
             <div>
@@ -77,7 +77,7 @@ export default function Dashboard() {
             </div>
             <Link
               href="/scan"
-              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-[#0f7a3b] shadow-lg shadow-black/10"
+              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-[#2D6A4F] shadow-lg shadow-black/10"
               aria-label="Snap food"
             >
               <Camera size={22} />
@@ -93,7 +93,7 @@ export default function Dashboard() {
               <p className="text-sm font-extrabold text-[#183c2a]">Calorie Tracker</p>
               <p className="text-xs font-semibold text-[#7b9587]">Consumed of Goal</p>
             </div>
-            <div className="rounded-full bg-[#f0f8f4] px-3 py-1 text-xs font-black text-[#0f7a3b]">
+            <div className="rounded-full bg-[#f0f8f4] px-3 py-1 text-xs font-black text-[#2D6A4F]">
               {Math.round(remaining)} Cal left
             </div>
           </div>
@@ -112,7 +112,7 @@ export default function Dashboard() {
               <h3 className="font-black text-[#183c2a]">Macros</h3>
               <p className="text-xs font-semibold text-[#7b9587]">Target vs Actual</p>
             </div>
-            <Sparkles className="text-[#0f7a3b]" size={18} />
+            <Sparkles className="text-[#2D6A4F]" size={18} />
           </div>
           <MacroBar
             protein={dashboard?.protein || 0}
@@ -129,7 +129,7 @@ export default function Dashboard() {
         <div className="mt-4 grid grid-cols-2 gap-3">
           <Link
             href="/scan"
-            className="flex items-center justify-between rounded-[1.5rem] bg-[#0f7a3b] p-4 text-white shadow-lg shadow-[#0f7a3b]/20"
+            className="flex items-center justify-between rounded-[1.5rem] bg-[#2D6A4F] p-4 text-white shadow-lg shadow-[#2D6A4F]/20"
           >
             <div>
               <p className="text-xs font-bold text-[#c9f4d9]">AI Food</p>
@@ -147,7 +147,7 @@ export default function Dashboard() {
               <p className="text-xs font-bold text-[#7b9587]">Manual</p>
               <p className="mt-1 text-lg font-black">Add Food</p>
             </div>
-            <div className="rounded-2xl bg-[#f0f8f4] p-2 text-[#0f7a3b]">
+            <div className="rounded-2xl bg-[#f0f8f4] p-2 text-[#2D6A4F]">
               <Plus size={22} />
             </div>
           </Link>
@@ -156,7 +156,7 @@ export default function Dashboard() {
         <div className="mt-4 mb-4">
           <div className="mb-3 flex items-center justify-between px-1">
             <h3 className="font-black text-[#183c2a]">Today&apos;s Meals</h3>
-            <Link href="/log" className="flex items-center gap-1 text-sm font-black text-[#0f7a3b]">
+            <Link href="/log" className="flex items-center gap-1 text-sm font-black text-[#2D6A4F]">
               View all <ChevronRight size={16} />
             </Link>
           </div>
@@ -182,7 +182,7 @@ export default function Dashboard() {
 function StatPill({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
     <div className="rounded-2xl bg-[#f5faf7] p-3">
-      <div className="flex items-center gap-2 text-[#0f7a3b]">
+      <div className="flex items-center gap-2 text-[#2D6A4F]">
         {icon}
         <span className="text-xs font-bold uppercase tracking-wide text-[#7b9587]">{label}</span>
       </div>

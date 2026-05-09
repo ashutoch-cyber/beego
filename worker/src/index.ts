@@ -16,6 +16,7 @@ export interface Env {
 type DetectionResult = {
   label: string;
   score: number;
+  is_food?: boolean;
   kind?: 'food' | 'packaged_food' | 'not_food' | 'manual';
   needsReview?: boolean;
   needsLabel?: boolean;
@@ -50,9 +51,22 @@ type MealComponent = {
   confidence?: number;
 };
 
+type StructuredIngredient = {
+  name: string;
+  serving: string;
+  macros: {
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+  };
+  confidence?: number;
+};
+
 type MealAnalysisResult = NutritionResult & DetectionResult & {
   confidence?: number;
   items?: MealComponent[];
+  ingredients?: StructuredIngredient[];
 };
 
 type LocalNutrition = NutritionResult & {
@@ -85,6 +99,7 @@ const OBJECT_DETECTION_MODEL = 'facebook/detr-resnet-50';
 const OCR_MODEL = 'microsoft/trocr-base-printed';
 const MIN_JWT_SECRET_LENGTH = 32;
 const GEMINI_DEFAULT_MODEL = 'gemini-2.0-flash';
+const NO_FOOD_MESSAGE = 'No food detected. Please snap a picture of a meal or packaged food.';
 
 const LOCAL_NUTRITION: LocalNutrition[] = [
   { food_name: 'rice', aliases: ['white rice', 'steamed rice', 'cooked rice'], calories: 200, protein: 4, carbs: 45, fat: 0.5, serving: '1 cup cooked', source: 'local' },
@@ -200,6 +215,7 @@ export default {
       if (!userId) return jsonResponse({ message: 'Invalid token' }, 401);
 
       if (path === '/api/upload' && request.method === 'POST') return await handleUpload(request, env, userId);
+      if (path === '/api/analyze-meal-fast' && request.method === 'POST') return await handleAnalyzeMealFast(request, env);
       if (path === '/api/analyze-meal' && request.method === 'POST') return await handleAnalyzeMeal(request, env);
       if (path === '/api/detect' && request.method === 'POST') return await handleDetect(request, env);
       if (path === '/api/nutrition-label' && request.method === 'POST') return await handleNutritionLabel(request, env);
@@ -315,6 +331,20 @@ async function handleUpload(request: Request, env: Env, userId: number): Promise
   // Since R2 is disabled, we don't save the image. 
   // We'll just return a success message. The frontend will pass the image to /api/detect next.
   return jsonResponse({ message: 'Image received (not saved)', key: 'temporary' });
+}
+
+async function handleAnalyzeMealFast(request: Request, env: Env): Promise<Response> {
+  try {
+    const image = await readImageFromRequest(request);
+    if (!image) return jsonResponse({ message: 'No image data' }, 400);
+
+    const geminiDetection = await analyzeMealFastWithGemini(image.body, image.imageType, env);
+    if (geminiDetection) return jsonResponse(geminiDetection);
+
+    return jsonResponse(await analyzeMealFastWithFallbackModels(image.body, image.imageType, env));
+  } catch {
+    return jsonResponse(manualDetectionResponse('AI detection is unavailable. Enter the food name and ingredients manually.'));
+  }
 }
 
 async function handleAnalyzeMeal(request: Request, env: Env): Promise<Response> {
@@ -443,6 +473,61 @@ async function readImageFromRequest(request: Request): Promise<{ body: ArrayBuff
   return body ? { body, imageType } : null;
 }
 
+async function analyzeMealFastWithFallbackModels(body: ArrayBuffer, imageType: string, env: Env): Promise<DetectionResult & { food_name?: string; confidence?: number }> {
+  const [food, objects] = await Promise.all([
+    detectWithHuggingFace(body, imageType, env),
+    detectObjectsWithHuggingFace(body, imageType, env),
+  ]);
+
+  const packagedFromObject = classifyPackagedFood(objects, '', food);
+  if (packagedFromObject) return normalizeFastDetection(packagedFromObject);
+
+  const objectWarning = classifyObjectWarning(objects, food);
+  if (objectWarning) return normalizeFastDetection(objectWarning);
+
+  const objectFood = bestEdibleObject(objects);
+  const mixedMeal = inferMixedMealFromObjects(objects, food, objectFood);
+  if (mixedMeal) {
+    return normalizeFastDetection({
+      label: mixedMeal.food_name || mixedMeal.label,
+      score: mixedMeal.score,
+      is_food: true,
+      kind: 'food',
+      needsReview: mixedMeal.needsReview,
+      message: 'Meal detected. Building ingredient breakdown...',
+    });
+  }
+
+  if (objectFood && (!food || food.score < 0.65 || objectFood.score > food.score + 0.15)) {
+    return normalizeFastDetection({
+      label: objectFood.label,
+      objectLabel: objectFood.label,
+      score: objectFood.score,
+      is_food: true,
+      kind: 'food',
+      needsReview: objectFood.score < 0.7,
+      message: objectFood.score < 0.7 ? 'Review this detected food before logging.' : '',
+    });
+  }
+
+  if (!food || food.score < 0.75 || objects?.some((item) => PACKAGED_OBJECTS.has(item.label))) {
+    const ocrText = await extractTextWithHuggingFace(body, imageType, env);
+    const packaged = classifyPackagedFood(objects, ocrText, food);
+    if (packaged) return normalizeFastDetection(packaged);
+  }
+
+  if (food?.label && food.score >= 0.5) return normalizeFastDetection({ ...food, is_food: true, kind: 'food' });
+
+  return normalizeFastDetection({
+    label: '',
+    score: 0,
+    is_food: false,
+    kind: 'not_food',
+    needsReview: true,
+    message: NO_FOOD_MESSAGE,
+  });
+}
+
 async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: string, env: Env): Promise<MealAnalysisResult> {
   const [food, objects] = await Promise.all([
     detectWithHuggingFace(body, imageType, env),
@@ -501,6 +586,48 @@ async function nutritionAnalysisFromLabel(label: string, score: number, env: Env
       confidence: score,
     }],
   });
+}
+
+async function analyzeMealFastWithGemini(body: ArrayBuffer, imageType: string, env: Env): Promise<(DetectionResult & { food_name?: string; confidence?: number }) | null> {
+  if (!env.GEMINI_API_KEY) return null;
+
+  try {
+    const model = normalizeGeminiModelName(env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL);
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: mealFastPassPrompt() },
+            {
+              inline_data: {
+                mime_type: imageType || 'image/jpeg',
+                data: arrayBufferToBase64(body),
+              },
+            },
+          ],
+        }],
+        generationConfig: {
+          temperature: 0.05,
+          max_output_tokens: 350,
+          response_mime_type: 'application/json',
+        },
+      }),
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    const text = extractGeminiOutputText(data);
+    if (!text) return null;
+
+    const parsed = parseJson(text);
+    if (!parsed) return null;
+    return normalizeFastDetection(parsed);
+  } catch {
+    return null;
+  }
 }
 
 async function analyzeMealWithGemini(body: ArrayBuffer, imageType: string, env: Env): Promise<MealAnalysisResult | null> {
@@ -603,12 +730,12 @@ async function analyzeMealWithOpenAI(body: ArrayBuffer, imageType: string, env: 
         input: [
           {
             role: 'system',
-            content: 'You estimate calories and macros from food photos for a calorie tracker. Return realistic estimates for the whole visible edible portion. Identify each visible food component and portion. If the image is not food, mark it not_food. If it is a packaged product without a readable nutrition facts panel, mark it packaged_food and ask for the back label. If a nutrition label is visible, read the label values. Be conservative and mark needsReview when uncertain. Never return negative numbers.',
+            content: `You estimate calories and macros from food photos for a calorie tracker. First apply a food/non-food logic gate. If no edible meal or packaged food is visible, set is_food false, kind not_food, and message exactly "${NO_FOOD_MESSAGE}". Return realistic estimates for the whole visible edible portion only when food is visible. Identify every visible component and portion; do not summarize a salad, thali, bowl, or biryani as one ingredient. Use precise dish names such as Egg Biryani instead of Rice. If it is a packaged product without a readable nutrition facts panel, mark it packaged_food and ask for the back label. If a nutrition label is visible, read the label values. Be conservative and mark needsReview when uncertain. Never return negative numbers.`,
           },
           {
             role: 'user',
             content: [
-              { type: 'input_text', text: 'Analyze this scan and return calories, protein, carbs, and fat for the full meal shown.' },
+              { type: 'input_text', text: 'Analyze this scan and return strict JSON with is_food, precise food_name, ingredient segmentation, calories, protein, carbs, and fat for the full visible meal.' },
               { type: 'input_image', image_url: imageUrl, detail: 'high' },
             ],
           },
@@ -678,6 +805,7 @@ function manualDetectionResponse(message = 'AI detection is temporarily unavaila
   return jsonResponse({
     label: '',
     score: 0,
+    is_food: false,
     kind: 'manual',
     needsReview: true,
     message,
@@ -690,6 +818,7 @@ function manualMealAnalysisResponse(message = 'I could not identify this meal co
     label: '',
     score: 0,
     confidence: 0,
+    is_food: false,
     kind: 'manual',
     calories: 0,
     protein: 0,
@@ -703,9 +832,36 @@ function manualMealAnalysisResponse(message = 'I could not identify this meal co
   };
 }
 
+function normalizeFastDetection(input: Partial<DetectionResult & { food_name?: string; confidence?: number }>): DetectionResult & { food_name?: string; confidence?: number } {
+  const isFood = input.is_food === false
+    ? false
+    : input.kind === 'not_food'
+      ? false
+      : input.kind === 'manual'
+        ? false
+        : true;
+  const kind = (input.kind || (isFood ? 'food' : 'not_food')) as NonNullable<DetectionResult['kind']>;
+  const label = String(input.label || input.food_name || '').trim();
+  const score = clamp01(input.score ?? input.confidence ?? 0);
+
+  return {
+    label: isFood ? titleCase(label || 'Food') : label,
+    food_name: isFood ? titleCase(String(input.food_name || label || 'Food')) : '',
+    objectLabel: input.objectLabel,
+    score,
+    confidence: score,
+    is_food: isFood,
+    kind,
+    needsReview: Boolean(input.needsReview || !isFood || score < 0.65),
+    needsLabel: Boolean(input.needsLabel),
+    message: !isFood ? NO_FOOD_MESSAGE : String(input.message || '').trim(),
+  };
+}
+
 function detectionToMealAnalysis(detection: DetectionResult): MealAnalysisResult {
   const foodName = detection.kind === 'not_food' ? detection.label : (detection.label || 'Packaged food');
   return normalizeMealAnalysis({
+    is_food: detection.is_food,
     food_name: foodName,
     label: detection.label,
     score: detection.score,
@@ -725,9 +881,10 @@ function detectionToMealAnalysis(detection: DetectionResult): MealAnalysisResult
 }
 
 function normalizeMealAnalysis(input: Partial<MealAnalysisResult>): MealAnalysisResult {
-  const kind = ['food', 'packaged_food', 'not_food', 'manual'].includes(String(input.kind))
+  const isFood = input.is_food === false ? false : input.kind === 'not_food' ? false : input.kind === 'manual' ? false : true;
+  const kind = (['food', 'packaged_food', 'not_food', 'manual'].includes(String(input.kind))
     ? input.kind
-    : 'food';
+    : (isFood ? 'food' : 'not_food')) as NonNullable<MealAnalysisResult['kind']>;
   const label = String(input.label || input.food_name || '').trim();
   const foodName = String(input.food_name || label || (kind === 'packaged_food' ? 'Packaged Food' : 'Food')).trim();
   const calories = nonNegativeNumber(input.calories);
@@ -735,8 +892,21 @@ function normalizeMealAnalysis(input: Partial<MealAnalysisResult>): MealAnalysis
   const carbs = nonNegativeNumber(input.carbs);
   const fat = nonNegativeNumber(input.fat);
   const score = clamp01(input.score ?? input.confidence ?? 0);
-  const items = Array.isArray(input.items)
-    ? input.items.map((item) => ({
+  const rawItems = Array.isArray(input.items)
+    ? input.items
+    : Array.isArray(input.ingredients)
+      ? input.ingredients.map((ingredient) => ({
+        name: ingredient?.name,
+        portion: ingredient?.serving,
+        calories: ingredient?.macros?.calories,
+        protein: ingredient?.macros?.protein,
+        carbs: ingredient?.macros?.carbs,
+        fat: ingredient?.macros?.fat,
+        confidence: ingredient?.confidence,
+      }))
+      : [];
+  const items = rawItems
+    .map((item) => ({
       name: titleCase(String(item?.name || 'Food')),
       portion: String(item?.portion || 'estimated portion'),
       calories: Math.round(nonNegativeNumber(item?.calories)),
@@ -745,13 +915,24 @@ function normalizeMealAnalysis(input: Partial<MealAnalysisResult>): MealAnalysis
       fat: roundMacro(item?.fat),
       confidence: clamp01(item?.confidence ?? score),
     })).filter((item) => item.name && (item.calories || item.protein || item.carbs || item.fat))
-    : [];
+  const ingredients = items.map((item) => ({
+    name: item.name,
+    serving: item.portion,
+    macros: {
+      calories: item.calories,
+      protein: item.protein,
+      carbs: item.carbs,
+      fat: item.fat,
+    },
+    confidence: item.confidence,
+  }));
 
   return {
     food_name: titleCase(foodName),
     label: label.toLowerCase(),
     score,
     confidence: score,
+    is_food: isFood,
     kind,
     calories: Math.round(calories),
     protein: roundMacro(protein),
@@ -766,8 +947,9 @@ function normalizeMealAnalysis(input: Partial<MealAnalysisResult>): MealAnalysis
     source: input.source || 'estimate',
     needsReview: Boolean(input.needsReview || kind !== 'food' || score < 0.65 || !calories),
     needsLabel: Boolean(input.needsLabel),
-    message: String(input.message || '').trim(),
+    message: isFood ? String(input.message || '').trim() : NO_FOOD_MESSAGE,
     items,
+    ingredients,
   };
 }
 
@@ -917,6 +1099,7 @@ async function detectWithHuggingFace(body: ArrayBuffer, contentType: string, env
     return {
       label: String(top.label).replace(/_/g, ' ').toLowerCase(),
       score: Number(top.score) || 0,
+      is_food: true,
       kind: 'food',
     };
   } catch {
@@ -972,8 +1155,6 @@ function classifyObjectWarning(objects: Array<{ label: string; score: number }> 
   if (!objects?.length) return null;
 
   const top = objects[0];
-  if (top?.label === 'person') return null;
-
   if (!top || top.score < 0.55 || FOOD_OBJECTS.has(top.label)) return null;
   if (hasFoodContext(objects, food)) return null;
   if (!NON_FOOD_OBJECTS.has(top.label)) return null;
@@ -982,9 +1163,10 @@ function classifyObjectWarning(objects: Array<{ label: string; score: number }> 
     label: top.label,
     objectLabel: top.label,
     score: top.score,
+    is_food: false,
     kind: 'not_food',
     needsReview: true,
-    message: `This looks like ${articleFor(top.label)} ${top.label}, not a food item. Please scan a meal or packaged food.`,
+    message: NO_FOOD_MESSAGE,
   };
 }
 
@@ -1075,7 +1257,7 @@ function bestEdibleObject(objects: Array<{ label: string; score: number }> | nul
 }
 
 function hasFoodContext(objects: Array<{ label: string; score: number }> | null, food: DetectionResult | null): boolean {
-  if ((food?.score || 0) >= 0.2) return true;
+  if ((food?.score || 0) >= 0.65) return true;
   return Boolean(objects?.some((item) => FOOD_OBJECTS.has(item.label) && item.score >= 0.25));
 }
 
@@ -1093,6 +1275,7 @@ function classifyPackagedFood(objects: Array<{ label: string; score: number }> |
     label,
     objectLabel: topPackage?.label,
     score: Math.max(food?.score || 0, topPackage?.score || 0.6),
+    is_food: true,
     kind: 'packaged_food',
     needsLabel: true,
     needsReview: true,
@@ -1738,16 +1921,29 @@ function normalizeGeminiModelName(model: string) {
   return trimmed.startsWith('models/') ? trimmed : `models/${trimmed}`;
 }
 
+function mealFastPassPrompt() {
+  return [
+    'You are the fast-pass food gate for NutriSnap AI. Look at the image and answer with only JSON.',
+    'Task 1: decide whether the image contains visible edible food or packaged food. Hands, people, tables, shoes, bags, or background objects do not matter if a real meal is visible.',
+    `If no edible meal or packaged food is visible, return is_food false, kind "not_food", and message exactly "${NO_FOOD_MESSAGE}".`,
+    'Task 2: if food is visible, name the meal precisely in food_name. Use precise dish names such as Egg Biryani, Paneer Salad Bowl, Chicken Thali, or the packaged brand/product when readable. Do not name a mixed meal after one ingredient.',
+    'If it is a packaged food front or unreadable package, return kind "packaged_food" with needsLabel true.',
+    'Return JSON only in this exact shape: {"is_food":true,"kind":"food","food_name":"string","label":"string","score":0.0,"confidence":0.0,"needsReview":false,"needsLabel":false,"message":"string"}',
+  ].join('\n');
+}
+
 function mealVisionPrompt() {
   return [
-    'You are NutriSnap AI, a careful meal-photo nutrition scanner for a calorie, protein, carbs, and fat counter.',
+    'You are NutriSnap AI, a careful meal-photo nutrition scanner for a calorie, protein, carbs, and fat counter. Return only strict JSON.',
+    `Start with a logic gate. If the image contains no edible meal or packaged food, set is_food false, kind "not_food", and message exactly "${NO_FOOD_MESSAGE}". Do not calculate nutrients for non-food images.`,
     'Analyze only the visible edible food. If people, hands, shoes, tables, plates, or background objects are present but clear food is visible, ignore the non-food background and analyze the meal.',
-    'Name the whole meal correctly. For mixed bowls, salads, thalis, plates, wraps, and sandwiches, do not name the scan after a single visible ingredient. Example: if carrots are visible in a bowl with beans, paneer, seeds, cabbage, cucumber, and dressing, call it a protein power bowl or mixed protein bowl and break it into components.',
-    'Perform component segmentation in the items array. For a healthy mixed bean and paneer salad, return separate rows like Carrot, Cucumber, Paneer, Mixed Bean Salad, and Dried Pomegranate Seeds with calories for each visible component.',
+    'Name the whole meal precisely. If it is Egg Biryani, return Egg Biryani, not Rice. If it is an Indian thali, return Indian Thali and segment Rice, Dal, Roti, Sabzi, Curd, Pickle, or other visible components. If it is a packaged item, use the readable brand and product name.',
+    'Never summarize a mixed meal as a single ingredient. For salads, identify Lettuce, Cucumber, Feta/Paneer, Olives/Beans, Seeds, Dressing, etc. separately when visible.',
+    'Perform component segmentation in both ingredients and items. For a healthy mixed bean and paneer salad, return separate rows like Carrot, Cucumber, Paneer, Mixed Bean Salad, and Dried Pomegranate Seeds with calories for each visible component.',
     'Estimate the full visible edible portion. You cannot weigh the food, so use realistic standard serving sizes and output midpoint numbers, not ranges.',
     'List every major visible component with an estimated portion and macros. Include likely oil or dressing only when the food looks seasoned, glossy, sauced, or tossed.',
     'If the image is a packaged food front or unreadable package, return kind packaged_food and ask for the back nutrition/ingredients label. If the image truly has no usable food, return kind manual and ask for the food name and main ingredients.',
-    'Return JSON only. Use this exact shape: {"kind":"food","food_name":"string","label":"string","score":0.0,"confidence":0.0,"calories":0,"protein":0,"carbs":0,"fat":0,"sugar":0,"fiber":0,"sodium":0,"serving":"string","needsReview":true,"needsLabel":false,"message":"string","items":[{"name":"string","portion":"string","calories":0,"protein":0,"carbs":0,"fat":0,"confidence":0.0}]}',
+    'Return JSON only. Use this exact shape: {"is_food":true,"kind":"food","food_name":"string","label":"string","score":0.0,"confidence":0.0,"calories":0,"protein":0,"carbs":0,"fat":0,"sugar":0,"fiber":0,"sodium":0,"serving":"string","needsReview":true,"needsLabel":false,"message":"string","ingredients":[{"name":"string","serving":"string","macros":{"calories":0,"protein":0,"carbs":0,"fat":0},"confidence":0.0}],"items":[{"name":"string","portion":"string","calories":0,"protein":0,"carbs":0,"fat":0,"confidence":0.0}]}',
     'All nutrition values must be non-negative numbers. score and confidence must be between 0 and 1.',
   ].join('\n');
 }
@@ -1760,7 +1956,7 @@ function nutritionLabelVisionPrompt(productName: string) {
     'If values are per serving, return per serving. If only per 100 g/ml is printed, return per 100 g/ml and set serving accordingly. Do not multiply by the whole packet unless the label says the whole packet is one serving.',
     'If an ingredient list is visible, copy it into ingredientsText. If nutrition numbers are missing but ingredient percentages are visible, estimate per 100 g and mark needsReview true.',
     'If this is only a front package image with no usable nutrition panel, return kind packaged_food, needsLabel true, and ask for the back label.',
-    'Return JSON only. Use this exact shape: {"kind":"food","food_name":"string","label":"string","score":0.0,"confidence":0.0,"calories":0,"protein":0,"carbs":0,"fat":0,"sugar":0,"fiber":0,"sodium":0,"serving":"string","rawText":"string","ingredientsText":"string","needsReview":true,"needsLabel":false,"message":"string","items":[{"name":"Label serving","portion":"string","calories":0,"protein":0,"carbs":0,"fat":0,"confidence":0.0}]}',
+    'Return JSON only. Use this exact shape: {"is_food":true,"kind":"food","food_name":"string","label":"string","score":0.0,"confidence":0.0,"calories":0,"protein":0,"carbs":0,"fat":0,"sugar":0,"fiber":0,"sodium":0,"serving":"string","rawText":"string","ingredientsText":"string","needsReview":true,"needsLabel":false,"message":"string","ingredients":[{"name":"Label serving","serving":"string","macros":{"calories":0,"protein":0,"carbs":0,"fat":0},"confidence":0.0}],"items":[{"name":"Label serving","portion":"string","calories":0,"protein":0,"carbs":0,"fat":0,"confidence":0.0}]}',
     'All nutrition values must be non-negative numbers. score and confidence must be between 0 and 1.',
   ].join('\n');
 }
@@ -1871,6 +2067,7 @@ function mealAnalysisJsonSchema() {
     type: 'object',
     additionalProperties: false,
     properties: {
+      is_food: { type: 'boolean' },
       kind: { type: 'string', enum: ['food', 'packaged_food', 'not_food', 'manual'] },
       food_name: { type: 'string' },
       label: { type: 'string' },
@@ -1887,6 +2084,30 @@ function mealAnalysisJsonSchema() {
       needsReview: { type: 'boolean' },
       needsLabel: { type: 'boolean' },
       message: { type: 'string' },
+      ingredients: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string' },
+            serving: { type: 'string' },
+            macros: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                calories: { type: 'number' },
+                protein: { type: 'number' },
+                carbs: { type: 'number' },
+                fat: { type: 'number' },
+              },
+              required: ['calories', 'protein', 'carbs', 'fat'],
+            },
+            confidence: { type: 'number' },
+          },
+          required: ['name', 'serving', 'macros', 'confidence'],
+        },
+      },
       items: {
         type: 'array',
         items: {
@@ -1906,6 +2127,7 @@ function mealAnalysisJsonSchema() {
       },
     },
     required: [
+      'is_food',
       'kind',
       'food_name',
       'label',
@@ -1922,6 +2144,7 @@ function mealAnalysisJsonSchema() {
       'needsReview',
       'needsLabel',
       'message',
+      'ingredients',
       'items',
     ],
   };

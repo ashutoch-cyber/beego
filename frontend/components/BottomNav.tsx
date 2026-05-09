@@ -26,7 +26,7 @@ export default function BottomNav() {
               href={item.href}
               className={`flex h-full w-16 flex-col items-center justify-center transition-all duration-200 ${
                 isActive
-                  ? 'text-[#0f7a3b] -translate-y-1'
+                  ? 'text-[#2D6A4F] -translate-y-1'
                   : 'text-[#8aa093] hover:text-[#315743]'
               }`}
             >

@@ -90,7 +90,7 @@ export default function WeightChart() {
               stroke="#22c55e"
               strokeWidth={2.5}
               dot={{ fill: '#22c55e', r: 4 }}
-              activeDot={{ r: 6, fill: '#16a34a' }}
+              activeDot={{ r: 6, fill: '#2D6A4F' }}
             />
           </LineChart>
         </ResponsiveContainer>

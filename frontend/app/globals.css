@@ -15,7 +15,7 @@
   }
 
   .btn-primary {
-    @apply rounded-2xl bg-[#0f7a3b] px-6 py-3 font-bold text-white transition-all duration-200 hover:bg-[#0c6330] active:scale-95;
+    @apply rounded-2xl bg-[#2D6A4F] px-6 py-3 font-bold text-white transition-all duration-200 hover:bg-[#1B4332] active:scale-95;
   }
 
   .btn-secondary {
@@ -23,7 +23,7 @@
   }
 
   .input-field {
-    @apply w-full rounded-2xl border border-[#dce8e1] px-4 py-3 outline-none transition-all focus:border-[#0f7a3b] focus:ring-2 focus:ring-[#bfe8d0];
+    @apply w-full rounded-2xl border border-[#dce8e1] px-4 py-3 outline-none transition-all focus:border-[#2D6A4F] focus:ring-2 focus:ring-[#bfe8d0];
   }
 
   .nav-item {
