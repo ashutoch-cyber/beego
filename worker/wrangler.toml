@@ -1,4 +1,4 @@
-name = "nutriscan-worker"
+name = "nutrisnap-api"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
 
@@ -16,9 +16,5 @@ binding = "DB"
 database_name = "nutriscan-db"
 database_id = "7e734a52-2b76-4d5a-9ff9-759351a1dd1c"
 
-[[r2_buckets]]
-binding = "IMAGES"
-bucket_name = "nutriscan-images"
-
 [env.production]
-name = "nutriscan-worker"
+name = "nutrisnap-api"
