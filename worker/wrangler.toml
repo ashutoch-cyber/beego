@@ -6,6 +6,8 @@ compatibility_date = "2026-05-01"
 # Set in Cloudflare dashboard or via wrangler secret
 # HUGGINGFACE_API_KEY = ""
 # HUGGINGFACE_API_TOKEN = "" # also supported
+# GEMINI_API_KEY = "" # optional, enables Gemini-quality meal photo breakdown
+# GEMINI_MODEL = "gemini-2.0-flash" # optional override
 # OPENAI_API_KEY = "" # optional, enables direct meal photo macro estimation
 # OPENAI_VISION_MODEL = "gpt-5.4-mini" # optional override
 # USDA_API_KEY = ""
