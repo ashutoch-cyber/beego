@@ -8,7 +8,7 @@ export interface Env {
   OPENAI_API_KEY?: string;
   OPENAI_VISION_MODEL?: string;
   USDA_API_KEY?: string;
-  JWT_SECRET: string;
+  JWT_SECRET?: string;
 }
 
 type DetectionResult = {
@@ -58,6 +58,7 @@ type LocalNutrition = NutritionResult & {
 const HUGGINGFACE_MODEL = 'nateraw/vit-base-food101';
 const OBJECT_DETECTION_MODEL = 'facebook/detr-resnet-50';
 const OCR_MODEL = 'microsoft/trocr-base-printed';
+const MIN_JWT_SECRET_LENGTH = 32;
 
 const LOCAL_NUTRITION: LocalNutrition[] = [
   { food_name: 'rice', aliases: ['white rice', 'steamed rice', 'cooked rice'], calories: 200, protein: 4, carbs: 45, fat: 0.5, serving: '1 cup cooked', source: 'local' },
@@ -137,8 +138,11 @@ export default {
       const authHeader = request.headers.get('Authorization');
       if (!authHeader || !authHeader.startsWith('Bearer ')) return jsonResponse({ message: 'Unauthorized' }, 401);
 
+      const jwtSecret = getJwtSecret(env);
+      if (!jwtSecret) return authConfigErrorResponse();
+
       const token = authHeader.split(' ')[1];
-      const userId = await verifyToken(token, env.JWT_SECRET);
+      const userId = await verifyToken(token, jwtSecret);
       if (!userId) return jsonResponse({ message: 'Invalid token' }, 401);
 
       if (path === '/api/upload' && request.method === 'POST') return await handleUpload(request, env, userId);
@@ -155,14 +159,31 @@ export default {
       if (path === '/api/profile') return request.method === 'GET' ? await handleProfile(request, env, userId) : await handleUpdateProfile(request, env, userId);
 
       return jsonResponse({ message: 'Not found' }, 404);
-    } catch (error: any) {
-      return jsonResponse({ message: error.message || 'Internal error' }, 500);
+    } catch {
+      return jsonResponse({ message: 'Internal error' }, 500);
     }
   }
 };
 
 function jsonResponse(data: any, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+}
+
+async function readJsonBody(request: Request): Promise<any | null> {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
+}
+
+function getJwtSecret(env: Env): string | null {
+  const secret = String(env.JWT_SECRET || '').trim();
+  return secret.length >= MIN_JWT_SECRET_LENGTH ? secret : null;
+}
+
+function authConfigErrorResponse() {
+  return jsonResponse({ message: 'Authentication is temporarily unavailable. Please try again later.' }, 503);
 }
 
 async function hashPassword(password: string): Promise<string> {
@@ -205,19 +226,35 @@ async function verifyToken(token: string, secret: string): Promise<number | null
 }
 
 async function handleRegister(request: Request, env: Env): Promise<Response> {
-  const { email, password } = await request.json() as any;
+  const jwtSecret = getJwtSecret(env);
+  if (!jwtSecret) return authConfigErrorResponse();
+
+  const body = await readJsonBody(request);
+  const email = String(body?.email || '').trim().toLowerCase();
+  const password = String(body?.password || '');
+  if (!email || !email.includes('@') || password.length < 6) {
+    return jsonResponse({ message: 'Enter a valid email and a password with at least 6 characters.' }, 400);
+  }
+
   const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existing) return jsonResponse({ message: 'Email already registered' }, 409);
   const result = await env.DB.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').bind(email, await hashPassword(password)).run();
   const userId = result.meta.last_row_id;
-  return jsonResponse({ token: await createToken({ userId, email }, env.JWT_SECRET), userId, email });
+  return jsonResponse({ token: await createToken({ userId, email }, jwtSecret), userId, email });
 }
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
-  const { email, password } = await request.json() as any;
+  const jwtSecret = getJwtSecret(env);
+  if (!jwtSecret) return authConfigErrorResponse();
+
+  const body = await readJsonBody(request);
+  const email = String(body?.email || '').trim().toLowerCase();
+  const password = String(body?.password || '');
+  if (!email || !password) return jsonResponse({ message: 'Enter your email and password.' }, 400);
+
   const user = await env.DB.prepare('SELECT id, email, password_hash FROM users WHERE email = ?').bind(email).first() as any;
   if (!user || (await hashPassword(password)) !== user.password_hash) return jsonResponse({ message: 'Invalid credentials' }, 401);
-  return jsonResponse({ token: await createToken({ userId: user.id, email: user.email }, env.JWT_SECRET), userId: user.id, email: user.email });
+  return jsonResponse({ token: await createToken({ userId: user.id, email: user.email }, jwtSecret), userId: user.id, email: user.email });
 }
 
 async function handleUpload(request: Request, env: Env, userId: number): Promise<Response> {
