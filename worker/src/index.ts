@@ -80,8 +80,13 @@ const LOCAL_NUTRITION: LocalNutrition[] = [
   { food_name: 'milk', calories: 150, protein: 8, carbs: 12, fat: 8, serving: '1 cup', source: 'local' },
   { food_name: 'oats', aliases: ['oatmeal', 'porridge'], calories: 150, protein: 5, carbs: 27, fat: 2.5, serving: '1 cup cooked', source: 'local' },
   { food_name: 'apple', calories: 95, protein: 0.5, carbs: 25, fat: 0.3, serving: '1 medium', source: 'local' },
+  { food_name: 'orange', calories: 62, protein: 1.2, carbs: 15, fat: 0.2, serving: '1 medium', source: 'local' },
+  { food_name: 'broccoli', calories: 55, protein: 3.7, carbs: 11, fat: 0.6, serving: '1 cup cooked', source: 'local' },
+  { food_name: 'carrot', aliases: ['carrots'], calories: 25, protein: 0.6, carbs: 6, fat: 0.1, serving: '1 medium', source: 'local' },
   { food_name: 'yogurt', aliases: ['curd', 'dahi'], calories: 150, protein: 12, carbs: 17, fat: 4, serving: '1 cup', source: 'local' },
   { food_name: 'pizza', calories: 285, protein: 12, carbs: 36, fat: 10, serving: '1 slice', source: 'local' },
+  { food_name: 'hot dog', calories: 290, protein: 10, carbs: 24, fat: 17, serving: '1 hot dog', source: 'local' },
+  { food_name: 'donut', aliases: ['doughnut'], calories: 260, protein: 3, carbs: 31, fat: 14, serving: '1 medium donut', source: 'local' },
   { food_name: 'burger', aliases: ['hamburger', 'cheeseburger'], calories: 354, protein: 17, carbs: 29, fat: 18, serving: '1 burger', source: 'local' },
   { food_name: 'salad', aliases: ['green salad', 'caesar salad'], calories: 120, protein: 3, carbs: 12, fat: 7, serving: '1 bowl', source: 'local' },
   { food_name: 'sandwich', aliases: ['toast sandwich'], calories: 300, protein: 14, carbs: 36, fat: 11, serving: '1 sandwich', source: 'local' },
@@ -105,6 +110,7 @@ const NON_FOOD_OBJECTS = new Set([
 
 const PACKAGED_OBJECTS = new Set(['bottle', 'wine glass']);
 const FOOD_OBJECTS = new Set(['banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'bowl', 'cup', 'fork', 'knife', 'spoon', 'dining table']);
+const EDIBLE_OBJECTS = new Set(['banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake']);
 const PACKAGED_TEXT_HINTS = ['ingredients', 'nutrition', 'serving', 'net wt', 'net weight', 'barcode', 'manufactured', 'packed', 'flavour', 'flavor', 'biscuit', 'biscuits', 'cookies', 'chips', 'snack'];
 
 const corsHeaders = {
@@ -270,6 +276,18 @@ async function handleDetect(request: Request, env: Env): Promise<Response> {
     const packagedFromObject = classifyPackagedFood(objects, '', food);
     if (packagedFromObject) return jsonResponse(packagedFromObject);
 
+    const objectFood = bestEdibleObject(objects);
+    if (objectFood && (!food || food.score < 0.65 || objectFood.score > food.score + 0.15)) {
+      return jsonResponse({
+        label: objectFood.label,
+        objectLabel: objectFood.label,
+        score: objectFood.score,
+        kind: 'food',
+        needsReview: objectFood.score < 0.7,
+        message: objectFood.score < 0.7 ? 'Review this detected food before logging.' : '',
+      } satisfies DetectionResult);
+    }
+
     if (food && food.score >= 0.5) return jsonResponse({ ...food, kind: 'food' });
 
     const ocrText = await extractTextWithHuggingFace(body, imageType, env);
@@ -327,6 +345,12 @@ async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: strin
   const packagedFromObject = classifyPackagedFood(objects, '', food);
   if (packagedFromObject) return detectionToMealAnalysis(packagedFromObject);
 
+  const objectFood = bestEdibleObject(objects);
+  const shouldTrustObjectFood = objectFood && (!food || food.score < 0.65 || objectFood.score > food.score + 0.15);
+  if (shouldTrustObjectFood) {
+    return nutritionAnalysisFromLabel(objectFood.label, objectFood.score, env, 'recognized from the photo');
+  }
+
   let ocrText = '';
   if (!food || food.score < 0.75 || objects?.some((item) => PACKAGED_OBJECTS.has(item.label))) {
     ocrText = await extractTextWithHuggingFace(body, imageType, env);
@@ -336,16 +360,21 @@ async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: strin
 
   if (!food?.label) return manualMealAnalysisResponse();
 
-  const nutrition = await resolveNutrition(food.label, env);
-  const needsReview = Boolean(nutrition.needsReview || food.score < 0.7 || nutrition.source === 'estimate');
+  return nutritionAnalysisFromLabel(food.label, food.score, env, 'recognized from the food classifier');
+}
+
+async function nutritionAnalysisFromLabel(label: string, score: number, env: Env, reason: string): Promise<MealAnalysisResult> {
+  const nutrition = await resolveNutrition(label, env);
+  const needsReview = Boolean(nutrition.needsReview || score < 0.65 || nutrition.source === 'estimate');
+
   return normalizeMealAnalysis({
     ...nutrition,
-    label: food.label,
-    score: food.score,
-    confidence: food.score,
+    label,
+    score,
+    confidence: score,
     kind: 'food',
     needsReview,
-    message: needsReview ? 'This is an estimate. Review the food name and totals before logging.' : '',
+    message: needsReview ? `This was ${reason}. Review the totals before logging.` : '',
     items: [{
       name: nutrition.food_name,
       portion: nutrition.serving || 'estimated serving',
@@ -353,7 +382,7 @@ async function analyzeMealWithFallbackModels(body: ArrayBuffer, imageType: strin
       protein: nutrition.protein,
       carbs: nutrition.carbs,
       fat: nutrition.fat,
-      confidence: food.score,
+      confidence: score,
     }],
   });
 }
@@ -446,7 +475,7 @@ function manualDetectionResponse(message = 'AI detection is temporarily unavaila
   } satisfies DetectionResult);
 }
 
-function manualMealAnalysisResponse(message = 'AI meal analysis is temporarily unavailable. Enter the food name manually.'): MealAnalysisResult {
+function manualMealAnalysisResponse(message = 'I could not identify this meal confidently. Enter the food name and main ingredients so nutrition can be estimated.'): MealAnalysisResult {
   return {
     food_name: '',
     label: '',
@@ -533,10 +562,10 @@ function normalizeMealAnalysis(input: Partial<MealAnalysisResult>): MealAnalysis
 }
 
 async function handleNutrition(request: Request, env: Env): Promise<Response> {
-  const { foodName } = await request.json() as any;
+  const { foodName, ingredients } = await request.json() as any;
   if (!foodName || typeof foodName !== 'string') return jsonResponse({ message: 'Food name is required' }, 400);
 
-  return jsonResponse(await resolveNutrition(foodName, env));
+  return jsonResponse(await resolveNutritionWithIngredients(foodName, ingredients, env));
 }
 
 async function handleLog(request: Request, env: Env, userId: number): Promise<Response> {
@@ -731,6 +760,10 @@ function classifyObjectWarning(objects: Array<{ label: string; score: number }> 
   };
 }
 
+function bestEdibleObject(objects: Array<{ label: string; score: number }> | null): { label: string; score: number } | null {
+  return objects?.find((item) => EDIBLE_OBJECTS.has(item.label) && item.score >= 0.45) || null;
+}
+
 function classifyPackagedFood(objects: Array<{ label: string; score: number }> | null, rawText: string, food: DetectionResult | null): DetectionResult | null {
   const topPackage = objects?.find((item) => PACKAGED_OBJECTS.has(item.label) && item.score >= 0.55);
   const textLooksPackaged = PACKAGED_TEXT_HINTS.some((hint) => rawText.toLowerCase().includes(hint));
@@ -806,6 +839,30 @@ async function resolveNutrition(foodName: string, env: Env): Promise<NutritionRe
   if (openFoodFacts) return openFoodFacts;
 
   return estimateNutrition(foodName);
+}
+
+async function resolveNutritionWithIngredients(foodName: string, ingredients: unknown, env: Env): Promise<NutritionResult> {
+  const cleanFoodName = String(foodName || '').trim();
+  const cleanIngredients = typeof ingredients === 'string' ? ingredients.trim() : '';
+
+  const direct = await resolveNutrition(cleanFoodName, env);
+  if (!cleanIngredients || direct.source !== 'estimate') return direct;
+
+  const ingredientBased = getLocalNutrition(`${cleanFoodName} ${cleanIngredients}`);
+  if (ingredientBased) {
+    return {
+      ...ingredientBased,
+      food_name: titleCase(cleanFoodName),
+      serving: 'estimated from listed ingredients',
+      needsReview: true,
+    };
+  }
+
+  return {
+    ...direct,
+    serving: 'estimated from food name and ingredients',
+    needsReview: true,
+  };
 }
 
 async function getUsdaNutrition(foodName: string, apiKey?: string): Promise<NutritionResult | null> {

@@ -40,12 +40,26 @@ async function fetchWithAuth(url: string, options: RequestInit = {}) {
     return null
   }
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Request failed' }))
-    throw new Error(error.message || `HTTP ${res.status}`)
+  return parseApiResponse(res, 'Request failed')
+}
+
+async function parseApiResponse(res: Response, fallbackMessage: string) {
+  const text = await res.text()
+  let data: any = null
+
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch {
+      throw new Error(fallbackMessage)
+    }
   }
 
-  return res.json()
+  if (!res.ok) {
+    throw new Error(data?.message || fallbackMessage)
+  }
+
+  return data
 }
 
 function normalizeDashboard(data: DashboardResponse | null) {
@@ -90,8 +104,7 @@ export const uploadImage = async (file: File) => {
     body: formData,
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
-  if (!res.ok) throw new Error('Upload failed')
-  return res.json()
+  return parseApiResponse(res, 'Upload failed')
 }
 
 export const detectFood = async (input: string | File) => {
@@ -116,11 +129,7 @@ export const detectFood = async (input: string | File) => {
     body,
   })
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Detection failed' }))
-    throw new Error(error.message || 'Detection failed')
-  }
-  return res.json()
+  return parseApiResponse(res, 'Detection failed')
 }
 
 export const analyzeMeal = async (file: File) => {
@@ -134,12 +143,7 @@ export const analyzeMeal = async (file: File) => {
     body: formData,
   })
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Meal scan failed' }))
-    throw new Error(error.message || 'Meal scan failed')
-  }
-
-  return res.json()
+  return parseApiResponse(res, 'Meal scan failed')
 }
 
 export const analyzeNutritionLabel = async (file: File, productName?: string) => {
@@ -154,18 +158,13 @@ export const analyzeNutritionLabel = async (file: File, productName?: string) =>
     body: formData,
   })
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Nutrition label scan failed' }))
-    throw new Error(error.message || 'Nutrition label scan failed')
-  }
-
-  return res.json()
+  return parseApiResponse(res, 'Nutrition label scan failed')
 }
 
-export const getNutrition = (foodName: string) =>
+export const getNutrition = (foodName: string, ingredients?: string) =>
   fetchWithAuth('/api/nutrition', {
     method: 'POST',
-    body: JSON.stringify({ foodName }),
+    body: JSON.stringify({ foodName, ingredients }),
   })
 
 export const logMeal = (meal: {

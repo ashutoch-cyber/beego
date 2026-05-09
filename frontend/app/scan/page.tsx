@@ -50,6 +50,7 @@ export default function ScanPage() {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'upload' | 'detect' | 'confirm' | 'label' | 'nutrition' | 'done'>('upload');
   const [customFood, setCustomFood] = useState('');
+  const [manualIngredients, setManualIngredients] = useState('');
   const [manualNutrition, setManualNutrition] = useState({ calories: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', sodium: '' });
   const [mealType, setMealType] = useState('breakfast');
   const [error, setError] = useState('');
@@ -124,9 +125,6 @@ export default function ScanPage() {
       const foodName = scanRes?.food_name || nextDetection.label || 'Food';
       setCustomFood(foodName);
       setNutritionResult(scanRes, foodName);
-      if (scanRes?.needsReview) {
-        setError(scanRes.message || 'Review the scanned totals before logging.');
-      }
       setStep('nutrition');
     } catch (err: any) {
       try {
@@ -139,9 +137,9 @@ export default function ScanPage() {
           score: 0,
           kind: 'manual',
           needsReview: true,
-          message: 'AI detection is unavailable. Enter the food name manually.',
+          message: 'I could not identify this meal confidently. Add its name and main ingredients so calories and macros can still be estimated.',
         });
-        setError(err.message || 'AI detection is unavailable. Enter the food name manually.');
+        setError('');
         setStep('confirm');
       }
     } finally {
@@ -149,11 +147,11 @@ export default function ScanPage() {
     }
   }, []);
 
-  async function handleConfirmFood(foodName: string) {
+  async function handleConfirmFood(foodName: string, ingredients = '') {
     setLoading(true);
     setError('');
     try {
-      const nutri = await getNutrition(foodName);
+      const nutri = await getNutrition(foodName, ingredients);
       setNutritionResult(nutri, foodName);
       setStep('nutrition');
     } catch (err: any) {
@@ -185,12 +183,9 @@ export default function ScanPage() {
       const productName = customFood.trim() || detected?.label || 'Packaged food';
       const nutri = await analyzeNutritionLabel(file, productName);
       setNutritionResult(nutri, productName);
-      if (nutri?.needsReview) {
-        setError('Some values could not be read clearly. Review the nutrition facts before logging.');
-      }
       setStep('nutrition');
     } catch (err: any) {
-      setError(err.message || 'Could not read the package label. Enter the nutrition values manually.');
+      setError(friendlyScanError(err, 'Could not read the package label. Enter the nutrition values manually.'));
     } finally {
       setLoading(false);
     }
@@ -291,6 +286,7 @@ export default function ScanPage() {
     setNutrition(null);
     setStep('upload');
     setCustomFood('');
+    setManualIngredients('');
     setManualNutrition({ calories: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', sodium: '' });
     setError('');
   }
@@ -456,10 +452,10 @@ export default function ScanPage() {
                       </div>
                       <div>
                         <p className="text-xs text-gray-500 font-medium">
-                          {needsManualReview ? 'Manual Confirmation' : 'AI Detected'}
+                          {needsManualReview ? 'Needs Details' : 'AI Detected'}
                         </p>
                         <h3 className="font-bold text-gray-900 text-lg capitalize">
-                          {needsManualReview ? (customFood || 'Enter food name') : detected.label}
+                          {needsManualReview ? (customFood || 'Tell Us What This Is') : detected.label}
                         </h3>
                       </div>
                       {!needsManualReview && (
@@ -487,10 +483,21 @@ export default function ScanPage() {
                         placeholder={needsManualReview ? 'Enter food name to continue...' : 'Enter food name manually...'}
                         className="input-field text-sm"
                       />
+                      {needsManualReview && (
+                        <div className="mt-3">
+                          <p className="text-xs text-gray-500 font-medium mb-2">Main ingredients</p>
+                          <textarea
+                            value={manualIngredients}
+                            onChange={(e) => setManualIngredients(e.target.value)}
+                            placeholder="Example: apple, rice, dal, chicken, oil, paneer..."
+                            className="input-field text-sm min-h-[88px] resize-none"
+                          />
+                        </div>
+                      )}
                     </div>
 
                     <button
-                      onClick={() => handleConfirmFood(confirmedFood)}
+                      onClick={() => handleConfirmFood(confirmedFood, manualIngredients)}
                       disabled={loading || !confirmedFood}
                       className="btn-primary w-full"
                     >
@@ -814,4 +821,15 @@ function toNumber(value: unknown) {
 
 function roundMacro(value: unknown) {
   return Math.round(toNumber(value) * 10) / 10;
+}
+
+function friendlyScanError(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (
+    /json|position|unexpected token|syntaxerror|failed to fetch|meal scan failed|detection failed/i.test(message)
+  ) {
+    return fallback;
+  }
+
+  return message || fallback;
 }
